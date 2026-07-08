@@ -50,7 +50,7 @@
 
 /// User-defined type kinds: struct or enum.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum UserTypeKind {
+pub enum UDTKind {
     Struct,
     Enum,
 }
@@ -209,20 +209,17 @@ pub struct IdentifierDecl {
 
 /// A field or enumerator inside a user-defined type declaration.
 #[derive(Debug, Clone, PartialEq)]
-pub enum UserTypeMember {
+pub enum UDTMember {
     Field(IdentifierDecl),
-    EnumVariant {
-        name: String,
-        ty: Option<Type>,
-    },
+    EnumVariant { name: String, ty: Option<Type> },
 }
 
 /// A user-defined type declaration: struct or enum.
 #[derive(Debug, Clone, PartialEq)]
-pub struct UserTypeDecl {
-    pub specifier: UserTypeKind,
+pub struct UDTDecl {
+    pub specifier: UDTKind,
     pub identifier: String,
-    pub members: Vec<UserTypeMember>,
+    pub members: Vec<UDTMember>,
 }
 
 /// A function declaration.
@@ -237,7 +234,7 @@ pub struct FunDecl<Ty> {
 /// A complete MiniC program: top-level type declarations and function declarations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program<Ty> {
-    pub type_declarations: Vec<UserTypeDecl>,
+    pub type_declarations: Vec<UDTDecl>,
     pub functions: Vec<FunDecl<Ty>>,
 }
 

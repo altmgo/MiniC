@@ -68,4 +68,4 @@ pub use identifiers::identifier;
 pub use literals::{literal, Literal};
 pub use program::program;
 pub use statements::{assignment, statement};
-pub use types::user_type_decl;
+pub use types::user_defined_type_decl;

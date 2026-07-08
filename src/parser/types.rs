@@ -4,7 +4,7 @@
 //! struct type names. It is reused by function parsing, struct field parsing,
 //! and variable declarations.
 
-use crate::ir::ast::{UserTypeDecl, UserTypeKind, UserTypeMember, Type};
+use crate::ir::ast::{Type, UDTDecl, UDTKind, UDTMember};
 use crate::parser::identifiers::{identifier, identifier_decl};
 use nom::multi::many1;
 use nom::{
@@ -17,17 +17,17 @@ use nom::{
     IResult,
 };
 
-fn member_field(input: &str) -> IResult<&str, UserTypeMember> {
+fn member_field(input: &str) -> IResult<&str, UDTMember> {
     map(
         tuple((
             preceded(multispace0, identifier_decl),
             preceded(multispace0, char(';')),
         )),
-        |(decl, _)| UserTypeMember::Field(decl),
+        |(decl, _)| UDTMember::Field(decl),
     )(input)
 }
 
-fn member_enum_variant(input: &str) -> IResult<&str, UserTypeMember> {
+fn member_enum_variant(input: &str) -> IResult<&str, UDTMember> {
     alt((
         // Payload variant: `type name ;`
         map(
@@ -36,7 +36,7 @@ fn member_enum_variant(input: &str) -> IResult<&str, UserTypeMember> {
                 preceded(multispace1, identifier),
                 preceded(multispace0, char(';')),
             )),
-            |(ty, name, _)| UserTypeMember::EnumVariant {
+            |(ty, name, _)| UDTMember::EnumVariant {
                 name: name.to_string(),
                 ty: Some(ty),
             },
@@ -47,7 +47,7 @@ fn member_enum_variant(input: &str) -> IResult<&str, UserTypeMember> {
                 preceded(multispace0, identifier),
                 preceded(multispace0, char(';')),
             )),
-            |(name, _)| UserTypeMember::EnumVariant {
+            |(name, _)| UDTMember::EnumVariant {
                 name: name.to_string(),
                 ty: None,
             },
@@ -55,32 +55,32 @@ fn member_enum_variant(input: &str) -> IResult<&str, UserTypeMember> {
     ))(input)
 }
 
-fn user_type_name(input: &str) -> IResult<&str, (UserTypeKind, String)> {
+fn user_defined_type_name(input: &str) -> IResult<&str, (UDTKind, String)> {
     alt((
         map(
             tuple((
                 preceded(multispace0, tag("struct")),
                 preceded(multispace1, identifier),
             )),
-            |(_, name)| (UserTypeKind::Struct, name.to_string()),
+            |(_, name)| (UDTKind::Struct, name.to_string()),
         ),
         map(
             tuple((
                 preceded(multispace0, tag("enum")),
                 preceded(multispace1, identifier),
             )),
-            |(_, name)| (UserTypeKind::Enum, name.to_string()),
+            |(_, name)| (UDTKind::Enum, name.to_string()),
         ),
     ))(input)
 }
 
 /// Parse a user-defined type declaration: `[ struct | enum ] N {...}`.
-pub fn user_type_decl(input: &str) -> IResult<&str, UserTypeDecl> {
-    let (rest, (specifier, identifier)) = user_type_name(input)?;
+pub fn user_defined_type_decl(input: &str) -> IResult<&str, UDTDecl> {
+    let (rest, (specifier, identifier)) = user_defined_type_name(input)?;
 
     let member_parser = match specifier {
-        UserTypeKind::Struct => member_field,
-        UserTypeKind::Enum => member_enum_variant,
+        UDTKind::Struct => member_field,
+        UDTKind::Enum => member_enum_variant,
     };
 
     let (rest, members) = delimited(
@@ -91,7 +91,7 @@ pub fn user_type_decl(input: &str) -> IResult<&str, UserTypeDecl> {
 
     Ok((
         rest,
-        UserTypeDecl {
+        UDTDecl {
             specifier,
             identifier,
             members,

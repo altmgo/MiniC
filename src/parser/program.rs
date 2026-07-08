@@ -26,16 +26,16 @@
 //! `main` is a semantic constraint checked in the next pipeline stage, not
 //! a syntactic one enforced here.
 
-use crate::ir::ast::{Program, UncheckedProgram, UserTypeDecl};
+use crate::ir::ast::{Program, UDTDecl, UncheckedProgram};
 use crate::parser::functions::fun_decl;
-use crate::parser::types::user_type_decl;
+use crate::parser::types::user_defined_type_decl;
 use nom::{branch::alt, combinator::map, multi::many0, IResult};
 
 /// Parse a complete MiniC program: zero or more struct or function declarations.
 /// Execution starts at the `main` function (validated by the type checker).
 pub fn program(input: &str) -> IResult<&str, UncheckedProgram> {
     let (rest, items) = many0(alt((
-        map(user_type_decl, |decl| Item::TypeDecl(decl)),
+        map(user_defined_type_decl, |decl| Item::TypeDecl(decl)),
         map(fun_decl, |f| Item::Function(f)),
     )))(input)?;
 
@@ -58,6 +58,6 @@ pub fn program(input: &str) -> IResult<&str, UncheckedProgram> {
 }
 
 enum Item {
-    TypeDecl(UserTypeDecl),
+    TypeDecl(UDTDecl),
     Function(crate::ir::ast::FunDecl<()>),
 }

@@ -34,9 +34,7 @@
 //! This gives MiniC correct lexical block scoping without a scope stack.
 
 use crate::environment::Environment;
-use crate::ir::ast::{
-    CheckedExpr, CheckedStmt, Expr, Statement, Type, UserTypeKind, UserTypeMember,
-};
+use crate::ir::ast::{CheckedExpr, CheckedStmt, Expr, Statement, Type, UDTKind, UDTMember};
 
 use super::eval_expr::{eval_call, eval_expr};
 use super::value::{RuntimeError, Value};
@@ -55,7 +53,7 @@ pub fn exec_stmt(stmt: &CheckedStmt, env: &mut Environment<Value>) -> ExecResult
             let stored = match ty {
                 Type::Struct(_) => init_val,
                 Type::Enum(identifier) => {
-                    build_user_type_value(&UserTypeKind::Enum, identifier, init_val, env)?
+                    build_user_defined_type_value(&UDTKind::Enum, identifier, init_val, env)?
                 }
                 _ => init_val,
             };
@@ -333,8 +331,8 @@ fn assign_member(
     }
 }
 
-fn build_user_type_value(
-    specifier: &UserTypeKind,
+fn build_user_defined_type_value(
+    specifier: &UDTKind,
     identifier: &str,
     init_val: Value,
     env: &Environment<Value>,
@@ -347,10 +345,10 @@ fn build_user_type_value(
     })?;
 
     match specifier {
-        UserTypeKind::Struct => {
+        UDTKind::Struct => {
             let mut fields = HashMap::new();
             for member in &decl.members {
-                if let UserTypeMember::Field(field) = member {
+                if let UDTMember::Field(field) = member {
                     fields.insert(field.name.clone(), default_value_for_type(&field.ty, env)?);
                 }
             }
@@ -359,8 +357,11 @@ fn build_user_type_value(
                 fields,
             })
         }
-        UserTypeKind::Enum => {
-            if let Value::Enum { variant, payload, .. } = init_val {
+        UDTKind::Enum => {
+            if let Value::Enum {
+                variant, payload, ..
+            } = init_val
+            {
                 Ok(Value::Enum {
                     identifier: identifier.to_string(),
                     variant,
@@ -385,10 +386,10 @@ fn default_value_for_type(ty: &Type, env: &Environment<Value>) -> Result<Value, 
         Type::Str => Ok(Value::Str(String::new())),
         Type::Array(_) => Ok(Value::Array(vec![])),
         Type::Struct(identifier) => {
-            build_user_type_value(&UserTypeKind::Struct, identifier, Value::Int(0), env)
+            build_user_defined_type_value(&UDTKind::Struct, identifier, Value::Int(0), env)
         }
         Type::Enum(identifier) => {
-            build_user_type_value(&UserTypeKind::Enum, identifier, Value::Int(0), env)
+            build_user_defined_type_value(&UDTKind::Enum, identifier, Value::Int(0), env)
         }
         Type::Function { .. } | Type::Any => Err(RuntimeError::new(
             "cannot create default runtime value for this type",

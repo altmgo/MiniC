@@ -58,12 +58,12 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ir::ast::{UserTypeDecl, UserTypeKind};
+use crate::ir::ast::{UDTDecl, UDTKind};
 
-pub type TypeDeclKey = (UserTypeKind, String);
-pub type TypeDeclMap = HashMap<TypeDeclKey, UserTypeDecl>;
+pub type TypeDeclKey = (UDTKind, String);
+pub type TypeDeclMap = HashMap<TypeDeclKey, UDTDecl>;
 
-pub fn build_type_decl_map(decls: &[UserTypeDecl]) -> TypeDeclMap {
+pub fn build_type_decl_map(decls: &[UDTDecl]) -> TypeDeclMap {
     let mut type_map = TypeDeclMap::new();
     for decl in decls {
         let key = (decl.specifier.clone(), decl.identifier.clone());
@@ -94,16 +94,12 @@ impl<V: Clone> Environment<V> {
         }
     }
 
-    pub fn get_type_decl(
-        &self,
-        specifier: &UserTypeKind,
-        identifier: &str,
-    ) -> Option<&UserTypeDecl> {
+    pub fn get_type_decl(&self, specifier: &UDTKind, identifier: &str) -> Option<&UDTDecl> {
         self.type_decls
             .get(&(specifier.clone(), identifier.to_string()))
     }
 
-    pub fn has_type_decl(&self, specifier: &UserTypeKind, identifier: &str) -> bool {
+    pub fn has_type_decl(&self, specifier: &UDTKind, identifier: &str) -> bool {
         self.get_type_decl(specifier, identifier).is_some()
     }
 

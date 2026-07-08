@@ -50,7 +50,7 @@ use crate::environment::{build_type_decl_map, Environment};
 use crate::ir::ast::{
     CheckedExpr, CheckedFunDecl, CheckedProgram, CheckedStmt, Expr, ExprD, FunDecl, Literal,
     MatchArm, Program, Statement, StatementD, Type, UncheckedExpr, UncheckedFunDecl,
-    UncheckedProgram, UncheckedStmt, UserTypeDecl, UserTypeKind, UserTypeMember,
+    UncheckedProgram, UncheckedStmt, UDTDecl, UDTKind, UDTMember,
 };
 use crate::stdlib::NativeRegistry;
 
@@ -76,7 +76,7 @@ impl std::fmt::Display for TypeError {
 
 impl std::error::Error for TypeError {}
 
-fn check_type_decls_unique(decls: &[UserTypeDecl]) -> Result<(), TypeError> {
+fn check_type_decls_unique(decls: &[UDTDecl]) -> Result<(), TypeError> {
     let mut seen = HashSet::new();
     for decl in decls {
         let key = (decl.specifier.clone(), decl.identifier.clone());
@@ -180,7 +180,7 @@ fn type_check_stmt(
             }
             match ty {
                 Type::Struct(identifier) => {
-                    if !env.has_type_decl(&UserTypeKind::Struct, identifier) {
+                    if !env.has_type_decl(&UDTKind::Struct, identifier) {
                         return Err(TypeError::new(format!(
                             "unknown struct type: {}",
                             identifier
@@ -188,7 +188,7 @@ fn type_check_stmt(
                     }
                 }
                 Type::Enum(identifier) => {
-                    if !env.has_type_decl(&UserTypeKind::Enum, identifier) {
+                    if !env.has_type_decl(&UDTKind::Enum, identifier) {
                         return Err(TypeError::new(format!(
                             "unknown enum type: {}",
                             identifier
@@ -343,7 +343,7 @@ fn type_check_stmt(
                 }
             };
             let decl = env
-                .get_type_decl(&UserTypeKind::Enum, &enum_name)
+                .get_type_decl(&UDTKind::Enum, &enum_name)
                 .ok_or_else(|| {
                     TypeError::new(format!("unknown enum type in match: {}", enum_name))
                 })?
@@ -351,7 +351,7 @@ fn type_check_stmt(
             let mut checked_arms = Vec::new();
             for arm in arms {
                 let payload_ty = decl.members.iter().find_map(|m| match m {
-                    UserTypeMember::EnumVariant { name, ty }
+                    UDTMember::EnumVariant { name, ty }
                         if *name == arm.variant =>
                     {
                         Some(ty.clone())
@@ -457,7 +457,7 @@ fn type_check_assign_target(
             match base_ty {
                 Type::Struct(ref identifier) => {
                     let decl = env
-                        .get_type_decl(&UserTypeKind::Struct, identifier)
+                        .get_type_decl(&UDTKind::Struct, identifier)
                         .ok_or_else(|| {
                             TypeError::new(format!(
                                 "unknown struct type in member assignment: {}",
@@ -469,7 +469,7 @@ fn type_check_assign_target(
                         .members
                         .iter()
                         .find_map(|m| match m {
-                            UserTypeMember::Field(decl) if decl.name == *member => {
+                            UDTMember::Field(decl) if decl.name == *member => {
                                 Some(decl.ty.clone())
                             }
                             _ => None,
@@ -728,7 +728,7 @@ fn type_check_expr(
             let field_ty = match &base.ty {
                 Type::Struct(ref identifier) => {
                     let decl = env
-                        .get_type_decl(&UserTypeKind::Struct, identifier)
+                        .get_type_decl(&UDTKind::Struct, identifier)
                         .ok_or_else(|| {
                             TypeError::new(format!(
                                 "unknown struct type in member access: {}",
@@ -738,7 +738,7 @@ fn type_check_expr(
                     decl.members
                         .iter()
                         .find_map(|m| match m {
-                            UserTypeMember::Field(decl) if decl.name == *member => {
+                            UDTMember::Field(decl) if decl.name == *member => {
                                 Some(decl.ty.clone())
                             }
                             _ => None,
@@ -836,14 +836,14 @@ fn check_struct_init(
     env: &Environment<Type>,
 ) -> Result<CheckedExpr, TypeError> {
     let decl = env
-        .get_type_decl(&UserTypeKind::Struct, struct_name)
+        .get_type_decl(&UDTKind::Struct, struct_name)
         .ok_or_else(|| TypeError::new(format!("unknown struct type: {}", struct_name)))?;
 
     let mut expected_fields: std::collections::HashSet<String> = decl
         .members
         .iter()
         .filter_map(|m| match m {
-            UserTypeMember::Field(f) => Some(f.name.clone()),
+            UDTMember::Field(f) => Some(f.name.clone()),
             _ => None,
         })
         .collect();
@@ -861,7 +861,7 @@ fn check_struct_init(
             .members
             .iter()
             .find_map(|m| match m {
-                UserTypeMember::Field(f) if f.name == *field_name => Some(f),
+                UDTMember::Field(f) if f.name == *field_name => Some(f),
                 _ => None,
             })
             .ok_or_else(|| {
@@ -916,12 +916,12 @@ fn check_enum_init(
     }
     let (variant, payload_opt) = &fields[0];
     let decl = env
-        .get_type_decl(&UserTypeKind::Enum, enum_name)
+        .get_type_decl(&UDTKind::Enum, enum_name)
         .ok_or_else(|| TypeError::new(format!("unknown enum type: {}", enum_name)))?;
     let member = decl
         .members
         .iter()
-        .find(|m| matches!(m, UserTypeMember::EnumVariant { name: n, .. } if n == variant))
+        .find(|m| matches!(m, UDTMember::EnumVariant { name: n, .. } if n == variant))
         .ok_or_else(|| {
             TypeError::new(format!(
                 "unknown variant '{}' for enum {}",
@@ -929,7 +929,7 @@ fn check_enum_init(
             ))
         })?;
     match (member, payload_opt) {
-        (UserTypeMember::EnumVariant { ty: Some(expected_ty), .. }, Some(payload_expr)) => {
+        (UDTMember::EnumVariant { ty: Some(expected_ty), .. }, Some(payload_expr)) => {
             let checked = type_check_expr(payload_expr, env, Some(expected_ty))?;
             if !types_compatible(&checked.ty, expected_ty) {
                 return Err(TypeError::new(format!(
@@ -946,7 +946,7 @@ fn check_enum_init(
                 ty: Type::Enum(enum_name.to_string()),
             })
         }
-        (UserTypeMember::EnumVariant { ty: None, .. }, None) => Ok(ExprD {
+        (UDTMember::EnumVariant { ty: None, .. }, None) => Ok(ExprD {
             exp: Expr::EnumVariant {
                 enum_name: Some(enum_name.to_string()),
                 variant: variant.clone(),
@@ -954,13 +954,13 @@ fn check_enum_init(
             },
             ty: Type::Enum(enum_name.to_string()),
         }),
-        (UserTypeMember::EnumVariant { ty: Some(_), .. }, None) => {
+        (UDTMember::EnumVariant { ty: Some(_), .. }, None) => {
             Err(TypeError::new(format!(
                 "variant '{}' requires a payload value, use {{ .{} = expr }}",
                 variant, variant
             )))
         }
-        (UserTypeMember::EnumVariant { ty: None, .. }, Some(_)) => {
+        (UDTMember::EnumVariant { ty: None, .. }, Some(_)) => {
             Err(TypeError::new(format!(
                 "variant '{}' is a unit variant and takes no value",
                 variant
