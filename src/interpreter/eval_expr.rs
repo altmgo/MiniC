@@ -214,13 +214,36 @@ pub fn eval_expr(expr: &CheckedExpr, env: &mut Environment<Value>) -> Result<Val
                 ))),
             }
         }
-        Expr::StructInit { .. } => Err(RuntimeError::new(
-            "struct init not yet supported in interpreter",
-        )),
+        Expr::StructInit { fields } => {
+            let struct_name = match &expr.ty {
+                Type::Struct(name) => name.clone(),
+                _ => return Err(RuntimeError::new("struct init has non-struct type")),
+            };
+            let mut vals = std::collections::HashMap::new();
+            for (name, fe) in fields {
+                vals.insert(name.clone(), eval_expr(fe, env)?);
+            }
+            Ok(Value::Struct {
+                identifier: struct_name,
+                fields: vals,
+            })
+        }
         Expr::Cast { expr, .. } => eval_expr(expr, env),
-        Expr::EnumVariant { .. } => Err(RuntimeError::new(
-            "enum variant not yet supported in interpreter",
-        )),
+        Expr::EnumVariant {
+            enum_name,
+            variant,
+            payload,
+        } => {
+            let pl = match payload {
+                Some(e) => Some(Box::new(eval_expr(e, env)?)),
+                None => None,
+            };
+            Ok(Value::Enum {
+                identifier: enum_name.clone().unwrap_or_default(),
+                variant: variant.clone(),
+                payload: pl,
+            })
+        }
     }
 }
 

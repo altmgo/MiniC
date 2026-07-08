@@ -139,9 +139,35 @@ pub fn exec_stmt(stmt: &CheckedStmt, env: &mut Environment<Value>) -> ExecResult
             eval_call(name, arg_vals?, env)?;
             Ok(None)
         }
-        Statement::Match { .. } => Err(RuntimeError::new(
-            "match not yet supported in interpreter",
-        )),
+        Statement::Match { target, arms } => {
+            let val = eval_expr(target, env)?;
+            let (variant, payload) = match val {
+                Value::Enum {
+                    variant, payload, ..
+                } => (variant, payload),
+                other => {
+                    return Err(RuntimeError::new(format!(
+                        "match target must be enum, got {}",
+                        other
+                    )))
+                }
+            };
+            for arm in arms {
+                if arm.variant == variant {
+                    let outer = env.names();
+                    if let (Some(b), Some(p)) = (&arm.binding, &payload) {
+                        env.declare(b.clone(), (**p).clone());
+                    }
+                    let r = exec_stmt(&arm.body, env)?;
+                    env.remove_new(&outer);
+                    return Ok(r);
+                }
+            }
+            Err(RuntimeError::new(format!(
+                "no matching arm for variant '{}'",
+                variant
+            )))
+        }
     }
 }
 
@@ -332,19 +358,18 @@ fn build_aggregate_value(
             })
         }
         AgtTypeSpecifier::Enum => {
-            let numeric = match init_val {
-                Value::Int(n) => n,
-                other => {
-                    return Err(RuntimeError::new(format!(
-                        "enum initializer must be integer, got {}",
-                        other
-                    )))
-                }
-            };
-            Ok(Value::Enum {
-                identifier: identifier.to_string(),
-                value: numeric,
-            })
+            if let Value::Enum { variant, payload, .. } = init_val {
+                Ok(Value::Enum {
+                    identifier: identifier.to_string(),
+                    variant,
+                    payload,
+                })
+            } else {
+                Err(RuntimeError::new(format!(
+                    "enum initializer must be an enum variant, got {}",
+                    init_val
+                )))
+            }
         }
     }
 }

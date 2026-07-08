@@ -258,7 +258,7 @@ fn test_stdlib_pow_float_args() {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregate Unions
+// Aggregate Types (Struct, Enum)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -266,8 +266,7 @@ fn test_struct_member_assign_and_read() {
     let src = r#"
         struct Point { int x; int y; }
         void main() {
-            struct Point p = 0;
-            p.x = 21;
+            struct Point p = { .x = 21, .y = 0 };
             int v = p.x;
         }
     "#;
@@ -276,86 +275,12 @@ fn test_struct_member_assign_and_read() {
 }
 
 #[test]
-fn test_union_member_assign_and_read_active_field() {
-    let src = r#"
-        union Number { int i; float f; }
-        void main() {
-            union Number n = 0;
-            n.i = 10;
-            int v = n.i;
-        }
-    "#;
-
-    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
-}
-
-#[test]
-fn test_union_member_read_inactive_field_errors() {
-    let src = r#"
-        union Number { int i; float f; }
-        void main() {
-            union Number n = 0;
-            n.i = 10;
-            float v = n.f;
-        }
-    "#;
-
-    let result = run(src);
-    assert!(
-        result.is_err(),
-        "expected inactive union member runtime error"
-    );
-    assert!(
-        result.unwrap_err().contains("inactive"),
-        "error should mention inactive field"
-    );
-}
-
-#[test]
 fn test_enum_member_access() {
     let src = r#"
         enum Color { Red; Green = 5; Blue; }
         void main() {
-            enum Color c = 0;
+            enum Color c = (enum Color)Red;
             int v = c.Blue;
-        }
-    "#;
-
-    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
-}
-
-#[test]
-fn test_union_member_switching_makes_previous_field_inactive() {
-    let src = r#"
-        union Number { int i; float f; }
-        void main() {
-            union Number n = 0;
-            n.i = 10;
-            n.f = 2.5;
-            int v = n.i;
-        }
-    "#;
-
-    let result = run(src);
-    assert!(
-        result.is_err(),
-        "expected inactive union member runtime error"
-    );
-    assert!(
-        result.unwrap_err().contains("inactive"),
-        "error should mention inactive field"
-    );
-}
-
-#[test]
-fn test_union_read_after_switch_on_active_field_is_ok() {
-    let src = r#"
-        union Number { int i; float f; }
-        void main() {
-            union Number n = 0;
-            n.i = 10;
-            n.f = 2.5;
-            float v = n.f;
         }
     "#;
 
@@ -367,7 +292,7 @@ fn test_enum_member_with_explicit_and_implicit_values_is_valid() {
     let src = r#"
         enum Flags { A = 3; B; C = 9; D; }
         void main() {
-            enum Flags f = 0;
+            enum Flags f = (enum Flags)A;
             int x = f.B;
             int y = f.D;
         }

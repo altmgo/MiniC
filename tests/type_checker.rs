@@ -211,15 +211,7 @@ fn test_type_check_print_wrong_arity() {
 #[test]
 fn test_type_check_accepts_struct_decl_and_member_access() {
     let result = parse_and_type_check(
-        "struct Point { int x; int y; }\nvoid main() { struct Point p = 0; p.x = 12; int v = p.x; }",
-    );
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_type_check_accepts_union_decl_and_member_access() {
-    let result = parse_and_type_check(
-        "union Number { int i; float f; }\nvoid main() { union Number n = 0; n.i = 7; int v = n.i; }",
+        "struct Point { int x; int y; }\nvoid main() { struct Point p = { .x = 12, .y = 0 }; int v = p.x; }",
     );
     assert!(result.is_ok());
 }
@@ -227,7 +219,7 @@ fn test_type_check_accepts_union_decl_and_member_access() {
 #[test]
 fn test_type_check_accepts_enum_decl_and_member_access() {
     let result = parse_and_type_check(
-        "enum Color { Red; Green = 5; Blue; }\nvoid main() { enum Color c = 0; int v = c.Blue; }",
+        "enum Color { Red; Green = 5; Blue; }\nvoid main() { enum Color c = (enum Color)Red; int v = c.Blue; }",
     );
     assert!(result.is_ok());
 }
@@ -235,7 +227,7 @@ fn test_type_check_accepts_enum_decl_and_member_access() {
 #[test]
 fn test_type_check_rejects_unknown_struct_member_access() {
     let result = parse_and_type_check(
-        "struct Point { int x; }\nvoid main() { struct Point p = 0; int v = p.y; }",
+        "struct Point { int x; }\nvoid main() { struct Point p = { .x = 0 }; int v = p.y; }",
     );
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("unknown member"));
@@ -244,7 +236,7 @@ fn test_type_check_rejects_unknown_struct_member_access() {
 #[test]
 fn test_type_check_rejects_enum_member_assignment() {
     let result = parse_and_type_check(
-        "enum Color { Red; Green; }\nvoid main() { enum Color c = 0; c.Red = 1; }",
+        "enum Color { Red; Green; }\nvoid main() { enum Color c = (enum Color)Red; c.Red = 1; }",
     );
     assert!(result.is_err());
     assert!(result
@@ -255,27 +247,18 @@ fn test_type_check_rejects_enum_member_assignment() {
 
 #[test]
 fn test_type_check_rejects_unknown_aggregate_type_declaration_use() {
-    let result = parse_and_type_check("void main() { struct Missing x = 0; }");
+    let result = parse_and_type_check("void main() { struct Missing x = { .x = 0 }; }");
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .message
-        .contains("unknown aggregate type"));
-}
-
-#[test]
-fn test_type_check_rejects_union_member_assignment_type_mismatch() {
-    let result = parse_and_type_check(
-        "union Number { int i; float f; }\nvoid main() { union Number n = 0; n.i = true; }",
-    );
-    assert!(result.is_err());
-    assert!(result.unwrap_err().message.contains("expected Int"));
+        .contains("unknown struct type"));
 }
 
 #[test]
 fn test_type_check_rejects_unknown_enum_member_access() {
     let result = parse_and_type_check(
-        "enum Color { Red; Green; }\nvoid main() { enum Color c = 0; int v = c.Blue; }",
+        "enum Color { Red; Green; }\nvoid main() { enum Color c = (enum Color)Red; int v = c.Blue; }",
     );
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("unknown enumerator"));
@@ -288,7 +271,7 @@ fn test_type_check_rejects_member_access_on_non_aggregate_value() {
     assert!(result
         .unwrap_err()
         .message
-        .contains("member access requires aggregate base type"));
+        .contains("member access requires struct or enum base type"));
 }
 
 #[test]

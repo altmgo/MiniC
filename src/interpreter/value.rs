@@ -105,14 +105,10 @@ pub enum Value {
         identifier: String,
         fields: std::collections::HashMap<String, Value>,
     },
-    Union {
-        identifier: String,
-        active_field: String,
-        value: Box<Value>,
-    },
     Enum {
         identifier: String,
-        value: i64,
+        variant: String,
+        payload: Option<Box<Value>>,
     },
     Void,
     Fn(FnValue),
@@ -137,12 +133,16 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Struct { identifier, .. } => write!(f, "<struct {}>", identifier),
-            Value::Union {
+            Value::Enum {
                 identifier,
-                active_field,
-                ..
-            } => write!(f, "<union {} active:{}>", identifier, active_field),
-            Value::Enum { identifier, value } => write!(f, "<enum {}={}>", identifier, value),
+                variant,
+                payload: None,
+            } => write!(f, "{}.{}", identifier, variant),
+            Value::Enum {
+                identifier,
+                variant,
+                payload: Some(v),
+            } => write!(f, "{}.{}({})", identifier, variant, v),
             Value::Fn(_) => write!(f, "<function>"),
         }
     }

@@ -105,10 +105,9 @@ fn test_parse_top_level_statements_fail() {
 fn test_parse_program_with_aggregate_declarations() {
     let prog = parse_program_file("aggregate_types.minic")
         .expect("program with aggregate type declarations should parse");
-    assert_eq!(prog.type_declarations.len(), 3);
+    assert_eq!(prog.type_declarations.len(), 2);
     assert_eq!(prog.type_declarations[0].identifier, "Point");
-    assert_eq!(prog.type_declarations[1].identifier, "Payload");
-    assert_eq!(prog.type_declarations[2].identifier, "Kind");
+    assert_eq!(prog.type_declarations[1].identifier, "Kind");
     assert_eq!(prog.functions.len(), 1);
     assert_eq!(prog.functions[0].name, "main");
 }

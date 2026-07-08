@@ -203,7 +203,10 @@ fn type_check_stmt(
                     name
                 )));
             }
-            let init_checked = type_check_expr_to_typed(init, env)?;
+            let init_checked = match ty {
+                Type::Struct(struct_name) => type_check_struct_init(init, struct_name, env)?,
+                _ => type_check_expr_to_typed(init, env)?,
+            };
             if !types_compatible(&init_checked.ty, ty) {
                 return Err(TypeError::new(format!(
                     "declaration of {}: expected {:?}, got {:?}",
@@ -517,16 +520,198 @@ fn type_check_expr_inner(e: &Expr<()>, env: &Environment<Type>) -> Result<Expr<T
             base: Box::new(type_check_expr_to_typed(base, env)?),
             member: member.clone(),
         }),
-        Expr::StructInit { .. } => Err(TypeError::new(
-            "struct init not yet supported in type checker",
-        )),
-        Expr::Cast { ty, expr } => Ok(Expr::Cast {
-            ty: ty.clone(),
-            expr: Box::new(type_check_expr_to_typed(expr, env)?),
-        }),
-        Expr::EnumVariant { .. } => Err(TypeError::new(
-            "enum variant not yet supported in type checker",
-        )),
+        Expr::StructInit { fields } => {
+            let fields_checked: Result<Vec<_>, _> = fields
+                .iter()
+                .map(|(name, e)| {
+                    type_check_expr_to_typed(e, env).map(|checked| (name.clone(), checked))
+                })
+                .collect();
+            Ok(Expr::StructInit {
+                fields: fields_checked?,
+            })
+        }
+        Expr::Cast { ty, expr } => {
+            let checked_inner = match ty {
+                Type::Enum(enum_name) => {
+                    resolve_enum_variant_expr(enum_name, expr, env)?
+                }
+                _ => type_check_expr_to_typed(expr, env)?,
+            };
+            Ok(Expr::Cast {
+                ty: ty.clone(),
+                expr: Box::new(checked_inner),
+            })
+        }
+        Expr::EnumVariant { enum_name, variant, payload } => {
+            let checked_payload = match payload {
+                Some(e) => Some(Box::new(type_check_expr_to_typed(e, env)?)),
+                None => None,
+            };
+            Ok(Expr::EnumVariant {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                payload: checked_payload,
+            })
+        }
+    }
+}
+
+fn resolve_enum_variant_expr(
+    enum_name: &str,
+    expr: &UncheckedExpr,
+    env: &Environment<Type>,
+) -> Result<CheckedExpr, TypeError> {
+    let decl = env
+        .aggregate_type(&AgtTypeSpecifier::Enum, enum_name)
+        .ok_or_else(|| {
+            TypeError::new(format!("unknown enum type '{}' in cast", enum_name))
+        })?;
+
+    match &expr.exp {
+        Expr::Call { name, args } => {
+            let variant = decl
+                .members
+                .iter()
+                .find(|m| matches!(m, AgtTypeMember::EnumVariant { name: n, .. } if n == name))
+                .ok_or_else(|| {
+                    TypeError::new(format!(
+                        "unknown variant '{}' for enum {}",
+                        name, enum_name
+                    ))
+                })?;
+
+            if let AgtTypeMember::EnumVariant { ty: Some(variant_ty), .. } = variant {
+                if args.len() != 1 {
+                    return Err(TypeError::new(format!(
+                        "variant '{}' expects 1 argument, got {}",
+                        name,
+                        args.len()
+                    )));
+                }
+                let arg_checked = type_check_expr_to_typed(&args[0], env)?;
+                if !types_compatible(&arg_checked.ty, variant_ty) {
+                    return Err(TypeError::new(format!(
+                        "variant '{}' expects {:?}, got {:?}",
+                        name, variant_ty, arg_checked.ty
+                    )));
+                }
+                Ok(ExprD {
+                    exp: Expr::EnumVariant {
+                        enum_name: Some(enum_name.to_string()),
+                        variant: name.clone(),
+                        payload: Some(Box::new(arg_checked)),
+                    },
+                    ty: Type::Enum(enum_name.to_string()),
+                })
+            } else if args.is_empty() {
+                Ok(ExprD {
+                    exp: Expr::EnumVariant {
+                        enum_name: Some(enum_name.to_string()),
+                        variant: name.clone(),
+                        payload: None,
+                    },
+                    ty: Type::Enum(enum_name.to_string()),
+                })
+            } else {
+                Err(TypeError::new(format!(
+                    "variant '{}' takes no payload, got {} arguments",
+                    name,
+                    args.len()
+                )))
+            }
+        }
+        Expr::Ident(name) => {
+            let exists = decl.members.iter().any(|m| {
+                matches!(m, AgtTypeMember::EnumVariant { name: n, .. } if n == name)
+            });
+            if exists {
+                Ok(ExprD {
+                    exp: Expr::EnumVariant {
+                        enum_name: Some(enum_name.to_string()),
+                        variant: name.clone(),
+                        payload: None,
+                    },
+                    ty: Type::Enum(enum_name.to_string()),
+                })
+            } else {
+                Err(TypeError::new(format!(
+                    "unknown variant '{}' for enum {}",
+                    name, enum_name
+                )))
+            }
+        }
+        other => Err(TypeError::new(format!(
+            "enum cast requires a variant name or call, got {:?}",
+            other
+        ))),
+    }
+}
+
+fn type_check_struct_init(
+    init: &UncheckedExpr,
+    struct_name: &str,
+    env: &Environment<Type>,
+) -> Result<CheckedExpr, TypeError> {
+    match &init.exp {
+        Expr::StructInit { fields } => {
+            let decl = env
+                .aggregate_type(&AgtTypeSpecifier::Struct, struct_name)
+                .ok_or_else(|| {
+                    TypeError::new(format!("unknown struct type: {}", struct_name))
+                })?;
+
+            let mut expected_fields: std::collections::HashSet<String> = decl
+                .members
+                .iter()
+                .filter_map(|m| match m {
+                    AgtTypeMember::Field(f) => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            let mut checked_fields = Vec::new();
+            for (field_name, field_expr) in fields {
+                let field_decl = decl.members.iter().find_map(|m| match m {
+                    AgtTypeMember::Field(f) if f.name == *field_name => Some(f),
+                    _ => None,
+                }).ok_or_else(|| {
+                    TypeError::new(format!(
+                        "unknown field '{}' in struct {}",
+                        field_name, struct_name
+                    ))
+                })?;
+
+                let checked = type_check_expr_to_typed(field_expr, env)?;
+                if !types_compatible(&checked.ty, &field_decl.ty) {
+                    return Err(TypeError::new(format!(
+                        "field '{}' expects {:?}, got {:?}",
+                        field_name, field_decl.ty, checked.ty
+                    )));
+                }
+                expected_fields.remove(field_name);
+                checked_fields.push((field_name.clone(), checked));
+            }
+
+            if !expected_fields.is_empty() {
+                return Err(TypeError::new(format!(
+                    "missing fields in struct {} initializer: {:?}",
+                    struct_name,
+                    expected_fields.iter().collect::<Vec<_>>()
+                )));
+            }
+
+            Ok(ExprD {
+                exp: Expr::StructInit {
+                    fields: checked_fields,
+                },
+                ty: Type::Struct(struct_name.to_string()),
+            })
+        }
+        other => Err(TypeError::new(format!(
+            "struct declaration requires {{ .field = expr, ... }}, got {:?}",
+            other
+        ))),
     }
 }
 
@@ -714,11 +899,11 @@ fn type_check_expr(e: &UncheckedExpr, env: &Environment<Type>) -> Result<Type, T
             }
         }
         Expr::StructInit { .. } => Err(TypeError::new(
-            "struct init not yet supported in type checker",
+            "struct init used outside of variable declaration",
         )),
         Expr::Cast { ty, .. } => Ok(ty.clone()),
         Expr::EnumVariant { .. } => Err(TypeError::new(
-            "enum variant not yet supported in type checker",
+            "enum variant used outside of cast or declaration",
         )),
     }
 }
