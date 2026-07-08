@@ -70,23 +70,29 @@ pub fn parse_call(input: &str) -> IResult<&str, (String, Vec<UncheckedExpr>)> {
 fn atom(input: &str) -> IResult<&str, UncheckedExpr> {
     alt((
         map(literal, |l| wrap(Expr::Literal(l.into()))),
-        // Struct init: { .field = expr, ... } (requires at least one field)
+        // Init: { .field [= expr], ... } (struct fields or enum variants)
         map(
             delimited(
                 preceded(multispace0, char('{')),
                 separated_list1(
                     preceded(multispace0, char(',')),
-                    map(
-                        pair(
-                            preceded(multispace0, preceded(char('.'), identifier)),
-                            preceded(multispace0, preceded(char('='), expression)),
+                    alt((
+                        map(
+                            pair(
+                                preceded(multispace0, preceded(char('.'), identifier)),
+                                preceded(multispace0, preceded(char('='), expression)),
+                            ),
+                            |(name, val): (&str, UncheckedExpr)| (name.to_string(), Some(val)),
                         ),
-                        |(name, val): (&str, UncheckedExpr)| (name.to_string(), val),
-                    ),
+                        map(
+                            preceded(multispace0, preceded(char('.'), identifier)),
+                            |name: &str| (name.to_string(), None),
+                        ),
+                    )),
                 ),
                 preceded(multispace0, char('}')),
             ),
-            |fields| wrap(Expr::StructInit { fields }),
+            |fields| wrap(Expr::Init { fields }),
         ),
         map(parse_call, |(name, args)| wrap(Expr::Call { name, args })),
         map(
@@ -161,12 +167,15 @@ fn primary(input: &str) -> IResult<&str, UncheckedExpr> {
 
 /// Unary: optional unary `-` applied to primary.
 fn unary(input: &str) -> IResult<&str, UncheckedExpr> {
-    alt((
-        map(pair(preceded(multispace0, tag("-")), unary), |(_, e)| {
-            wrap(Expr::Neg(Box::new(e)))
-        }),
-        primary,
-    ))(input)
+    preceded(
+        multispace0,
+        alt((
+            map(pair(preceded(multispace0, tag("-")), unary), |(_, e)| {
+                wrap(Expr::Neg(Box::new(e)))
+            }),
+            primary,
+        )),
+    )(input)
 }
 
 /// Multiplicative: unary with `*` and `/` (left-associative).

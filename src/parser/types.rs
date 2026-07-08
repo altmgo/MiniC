@@ -4,79 +4,83 @@
 //! struct type names. It is reused by function parsing, struct field parsing,
 //! and variable declarations.
 
-use crate::ir::ast::{AggregateTypeDecl, AgtTypeMember, AgtTypeSpecifier, Type};
+use crate::ir::ast::{UserTypeDecl, UserTypeKind, UserTypeMember, Type};
 use crate::parser::identifiers::{identifier, identifier_decl};
-use crate::parser::literals::integer_literal;
 use nom::multi::many1;
 use nom::{
     branch::alt,
     bytes::complete::tag,
     character::complete::{char, multispace0, multispace1},
-    combinator::{map, opt},
+    combinator::map,
     multi::many0,
     sequence::{delimited, pair, preceded, tuple},
     IResult,
 };
 
-fn agt_member_field(input: &str) -> IResult<&str, AgtTypeMember> {
+fn member_field(input: &str) -> IResult<&str, UserTypeMember> {
     map(
         tuple((
             preceded(multispace0, identifier_decl),
             preceded(multispace0, char(';')),
         )),
-        |(decl, _)| AgtTypeMember::Field(decl),
+        |(decl, _)| UserTypeMember::Field(decl),
     )(input)
 }
 
-fn agt_member_enum_variant(input: &str) -> IResult<&str, AgtTypeMember> {
-    map(
-        tuple((
-            preceded(multispace0, identifier),
-            opt(delimited(
-                preceded(multispace0, char('(')),
+fn member_enum_variant(input: &str) -> IResult<&str, UserTypeMember> {
+    alt((
+        // Payload variant: `type name ;`
+        map(
+            tuple((
                 preceded(multispace0, type_definition),
-                preceded(multispace0, char(')')),
+                preceded(multispace1, identifier),
+                preceded(multispace0, char(';')),
             )),
-            opt(preceded(
-                preceded(multispace0, char('=')),
-                preceded(multispace0, integer_literal),
+            |(ty, name, _)| UserTypeMember::EnumVariant {
+                name: name.to_string(),
+                ty: Some(ty),
+            },
+        ),
+        // Unit variant: `name ;`
+        map(
+            tuple((
+                preceded(multispace0, identifier),
+                preceded(multispace0, char(';')),
             )),
-            preceded(multispace0, char(';')),
-        )),
-        |(name, payload, value, _)| AgtTypeMember::EnumVariant {
-            name: name.to_string(),
-            ty: payload,
-            value,
-        },
-    )(input)
+            |(name, _)| UserTypeMember::EnumVariant {
+                name: name.to_string(),
+                ty: None,
+            },
+        ),
+    ))(input)
 }
 
-fn aggregate_type_name(input: &str) -> IResult<&str, (AgtTypeSpecifier, String)> {
+fn user_type_name(input: &str) -> IResult<&str, (UserTypeKind, String)> {
     alt((
         map(
             tuple((
                 preceded(multispace0, tag("struct")),
                 preceded(multispace1, identifier),
             )),
-            |(_, name)| (AgtTypeSpecifier::Struct, name.to_string()),
+            |(_, name)| (UserTypeKind::Struct, name.to_string()),
         ),
         map(
             tuple((
                 preceded(multispace0, tag("enum")),
                 preceded(multispace1, identifier),
             )),
-            |(_, name)| (AgtTypeSpecifier::Enum, name.to_string()),
+            |(_, name)| (UserTypeKind::Enum, name.to_string()),
         ),
     ))(input)
 }
 
-/// Parse an aggregate type: `[ struct | union | enum ] N {...}`.
-pub fn aggregate_type_decl(input: &str) -> IResult<&str, AggregateTypeDecl> {
-    let (rest, (specifier, identifier)) = aggregate_type_name(input)?;
+/// Parse a user-defined type declaration: `[ struct | enum ] N {...}`.
+pub fn user_type_decl(input: &str) -> IResult<&str, UserTypeDecl> {
+    let (rest, (specifier, identifier)) = user_type_name(input)?;
 
     let member_parser = match specifier {
-        AgtTypeSpecifier::Struct => agt_member_field,
-        AgtTypeSpecifier::Enum => agt_member_enum_variant,
+        UserTypeKind::Struct => member_field,
+        UserTypeKind::Enum => member_enum_variant,
     };
 
     let (rest, members) = delimited(
@@ -87,7 +91,7 @@ pub fn aggregate_type_decl(input: &str) -> IResult<&str, AggregateTypeDecl> {
 
     Ok((
         rest,
-        AggregateTypeDecl {
+        UserTypeDecl {
             specifier,
             identifier,
             members,

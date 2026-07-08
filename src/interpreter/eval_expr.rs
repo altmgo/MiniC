@@ -40,7 +40,7 @@
 //! for more detail on this mechanism.
 
 use crate::environment::Environment;
-use crate::ir::ast::{AgtTypeMember, AgtTypeSpecifier, CheckedExpr, Expr, Literal, Type};
+use crate::ir::ast::{CheckedExpr, Expr, Literal, Type};
 
 use super::exec_stmt::exec_stmt;
 use super::value::{FnValue, RuntimeError, Value};
@@ -205,22 +205,25 @@ pub fn eval_expr(expr: &CheckedExpr, env: &mut Environment<Value>) -> Result<Val
                         identifier, other
                     ))),
                 },
-                Type::Enum(identifier) => {
-                    enum_member_value(identifier, member, env).map(Value::Int)
-                }
                 other => Err(RuntimeError::new(format!(
-                    "member access requires struct or enum base type, got {:?}",
+                    "member access requires struct base type, got {:?}",
                     other
                 ))),
             }
         }
-        Expr::StructInit { fields } => {
+        Expr::Init { fields } => {
             let struct_name = match &expr.ty {
                 Type::Struct(name) => name.clone(),
                 _ => return Err(RuntimeError::new("struct init has non-struct type")),
             };
             let mut vals = std::collections::HashMap::new();
-            for (name, fe) in fields {
+            for (name, fe_opt) in fields {
+                let fe = fe_opt.as_ref().ok_or_else(|| {
+                    RuntimeError::new(format!(
+                        "struct field '{}' has no value",
+                        name
+                    ))
+                })?;
                 vals.insert(name.clone(), eval_expr(fe, env)?);
             }
             Ok(Value::Struct {
@@ -228,7 +231,10 @@ pub fn eval_expr(expr: &CheckedExpr, env: &mut Environment<Value>) -> Result<Val
                 fields: vals,
             })
         }
-        Expr::Cast { expr, .. } => eval_expr(expr, env),
+        Expr::Cast { ty, expr } => {
+            let val = eval_expr(expr, env)?;
+            Ok(cast_value(ty, val))
+        }
         Expr::EnumVariant {
             enum_name,
             variant,
@@ -275,32 +281,6 @@ pub fn eval_call(
         Some(_) => Err(RuntimeError::new(format!("'{}' is not a function", name))),
         None => Err(RuntimeError::new(format!("undefined function '{}'", name))),
     }
-}
-
-fn enum_member_value(
-    agt_identifier: &str,
-    member: &str,
-    env: &Environment<Value>,
-) -> Result<i64, RuntimeError> {
-    let decl = env
-        .aggregate_type(&AgtTypeSpecifier::Enum, agt_identifier)
-        .ok_or_else(|| RuntimeError::new(format!("unknown enum type '{}'", agt_identifier)))?;
-
-    let mut next_value: i64 = 0;
-    for entry in &decl.members {
-        if let AgtTypeMember::EnumVariant { name, value, .. } = entry {
-            let resolved = value.unwrap_or(next_value);
-            if name == member {
-                return Ok(resolved);
-            }
-            next_value = resolved + 1;
-        }
-    }
-
-    Err(RuntimeError::new(format!(
-        "unknown enumerator '{}.{}'",
-        agt_identifier, member
-    )))
 }
 
 // --- Helpers ---
@@ -357,6 +337,30 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Struct { identifier: ida, fields: fa },
+         Value::Struct { identifier: idb, fields: fb }) => {
+            ida == idb
+                && fa.len() == fb.len()
+                && fa.iter().all(|(k, v)| fb.get(k).map_or(false, |w| values_equal(v, w)))
+        }
+        (Value::Enum { identifier: ida, variant: va, payload: pa },
+         Value::Enum { identifier: idb, variant: vb, payload: pb }) => {
+            ida == idb
+                && va == vb
+                && match (pa, pb) {
+                    (Some(a), Some(b)) => values_equal(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
         _ => false,
+    }
+}
+
+fn cast_value(ty: &Type, val: Value) -> Value {
+    match (ty, &val) {
+        (Type::Int, Value::Float(x)) => Value::Int(*x as i64),
+        (Type::Float, Value::Int(n)) => Value::Float(*n as f64),
+        _ => val,
     }
 }

@@ -35,7 +35,7 @@
 
 use crate::environment::Environment;
 use crate::ir::ast::{
-    AgtTypeMember, AgtTypeSpecifier, CheckedExpr, CheckedStmt, Expr, Statement, Type,
+    CheckedExpr, CheckedStmt, Expr, Statement, Type, UserTypeKind, UserTypeMember,
 };
 
 use super::eval_expr::{eval_call, eval_expr};
@@ -53,11 +53,9 @@ pub fn exec_stmt(stmt: &CheckedStmt, env: &mut Environment<Value>) -> ExecResult
         Statement::Decl { name, ty, init } => {
             let init_val = eval_expr(init, env)?;
             let stored = match ty {
-                Type::Struct(identifier) => {
-                    build_aggregate_value(&AgtTypeSpecifier::Struct, identifier, init_val, env)?
-                }
+                Type::Struct(_) => init_val,
                 Type::Enum(identifier) => {
-                    build_aggregate_value(&AgtTypeSpecifier::Enum, identifier, init_val, env)?
+                    build_user_type_value(&UserTypeKind::Enum, identifier, init_val, env)?
                 }
                 _ => init_val,
             };
@@ -154,12 +152,16 @@ pub fn exec_stmt(stmt: &CheckedStmt, env: &mut Environment<Value>) -> ExecResult
             };
             for arm in arms {
                 if arm.variant == variant {
-                    let outer = env.names();
+                    let saved = arm.binding.as_ref().and_then(|b| env.get(b).cloned());
                     if let (Some(b), Some(p)) = (&arm.binding, &payload) {
                         env.declare(b.clone(), (**p).clone());
                     }
                     let r = exec_stmt(&arm.body, env)?;
-                    env.remove_new(&outer);
+                    if let (Some(b), Some(orig)) = (&arm.binding, saved) {
+                        env.declare(b.clone(), orig);
+                    } else if let Some(b) = &arm.binding {
+                        env.remove(b);
+                    }
                     return Ok(r);
                 }
             }
@@ -331,24 +333,24 @@ fn assign_member(
     }
 }
 
-fn build_aggregate_value(
-    specifier: &AgtTypeSpecifier,
+fn build_user_type_value(
+    specifier: &UserTypeKind,
     identifier: &str,
     init_val: Value,
     env: &Environment<Value>,
 ) -> Result<Value, RuntimeError> {
-    let decl = env.aggregate_type(specifier, identifier).ok_or_else(|| {
+    let decl = env.get_type_decl(specifier, identifier).ok_or_else(|| {
         RuntimeError::new(format!(
-            "unknown aggregate type at runtime: {:?} {}",
+            "unknown user-defined type at runtime: {:?} {}",
             specifier, identifier
         ))
     })?;
 
     match specifier {
-        AgtTypeSpecifier::Struct => {
+        UserTypeKind::Struct => {
             let mut fields = HashMap::new();
             for member in &decl.members {
-                if let AgtTypeMember::Field(field) = member {
+                if let UserTypeMember::Field(field) = member {
                     fields.insert(field.name.clone(), default_value_for_type(&field.ty, env)?);
                 }
             }
@@ -357,7 +359,7 @@ fn build_aggregate_value(
                 fields,
             })
         }
-        AgtTypeSpecifier::Enum => {
+        UserTypeKind::Enum => {
             if let Value::Enum { variant, payload, .. } = init_val {
                 Ok(Value::Enum {
                     identifier: identifier.to_string(),
@@ -383,10 +385,10 @@ fn default_value_for_type(ty: &Type, env: &Environment<Value>) -> Result<Value, 
         Type::Str => Ok(Value::Str(String::new())),
         Type::Array(_) => Ok(Value::Array(vec![])),
         Type::Struct(identifier) => {
-            build_aggregate_value(&AgtTypeSpecifier::Struct, identifier, Value::Int(0), env)
+            build_user_type_value(&UserTypeKind::Struct, identifier, Value::Int(0), env)
         }
         Type::Enum(identifier) => {
-            build_aggregate_value(&AgtTypeSpecifier::Enum, identifier, Value::Int(0), env)
+            build_user_type_value(&UserTypeKind::Enum, identifier, Value::Int(0), env)
         }
         Type::Function { .. } | Type::Any => Err(RuntimeError::new(
             "cannot create default runtime value for this type",

@@ -258,7 +258,7 @@ fn test_stdlib_pow_float_args() {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregate Types (Struct, Enum)
+// User-defined Types (Struct, Enum)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -275,12 +275,16 @@ fn test_struct_member_assign_and_read() {
 }
 
 #[test]
-fn test_enum_member_access() {
+fn test_enum_init_and_match() {
     let src = r#"
-        enum Color { Red; Green = 5; Blue; }
+        enum Option { int Some; None; }
         void main() {
-            enum Color c = (enum Color)Red;
-            int v = c.Blue;
+            enum Option x = { .Some = 42 };
+            int result = 0;
+            match x {
+                case Some: { result = Some; }
+                case None: { result = -1; }
+            }
         }
     "#;
 
@@ -288,15 +292,98 @@ fn test_enum_member_access() {
 }
 
 #[test]
-fn test_enum_member_with_explicit_and_implicit_values_is_valid() {
+fn test_enum_match_unit_variant() {
     let src = r#"
-        enum Flags { A = 3; B; C = 9; D; }
+        enum Option { int Some; None; }
         void main() {
-            enum Flags f = (enum Flags)A;
-            int x = f.B;
-            int y = f.D;
+            enum Option x = { .None };
+            int result = -1;
+            match x {
+                case Some: { result = Some; }
+                case None: { result = 99; }
+            }
         }
     "#;
 
+    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
+}
+
+#[test]
+fn test_struct_init_values_not_zeroed_caught_by_oob() {
+    let src = r#"
+        struct Point { int x; int y; }
+        void main() {
+            struct Point p = { .x = 0, .y = 10 };
+            int[] arr = [1];
+            int v = arr[p.y];
+        }
+    "#;
+    let result = run(src);
+    assert!(result.is_err(), "struct init should preserve field values (p.y should be 10)");
+    assert!(
+        result.unwrap_err().contains("out of bounds"),
+        "expected out of bounds error from struct field value"
+    );
+}
+
+#[test]
+fn test_struct_value_equality() {
+    let src = r#"
+        struct Pair { int a; int b; }
+        void main() {
+            struct Pair p = { .a = 1, .b = 2 };
+            struct Pair q = { .a = 1, .b = 2 };
+            bool eq = p == q;
+        }
+    "#;
+    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
+}
+
+#[test]
+fn test_enum_value_equality() {
+    let src = r#"
+        enum Option { int Some; None; }
+        void main() {
+            enum Option a = { .Some = 1 };
+            enum Option b = { .Some = 1 };
+            bool eq = a == b;
+        }
+    "#;
+    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
+}
+
+#[test]
+fn test_cast_coercion_float_to_int() {
+    let src = r#"
+        void main() {
+            int x = (int)3.14;
+        }
+    "#;
+    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
+}
+
+#[test]
+fn test_cast_coercion_int_to_float() {
+    let src = r#"
+        void main() {
+            float x = (float)3;
+        }
+    "#;
+    assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
+}
+
+#[test]
+fn test_match_binding_does_not_leak() {
+    let src = r#"
+        enum Option { int Some; None; }
+        void main() {
+            int Some = 0;
+            enum Option x = { .Some = 42 };
+            match x {
+                case Some: { int y = Some; }
+                case None: { }
+            }
+        }
+    "#;
     assert!(run(src).is_ok(), "{}", run(src).unwrap_err());
 }

@@ -217,9 +217,17 @@ fn test_type_check_accepts_struct_decl_and_member_access() {
 }
 
 #[test]
-fn test_type_check_accepts_enum_decl_and_member_access() {
+fn test_type_check_accepts_enum_decl_and_init() {
     let result = parse_and_type_check(
-        "enum Color { Red; Green = 5; Blue; }\nvoid main() { enum Color c = (enum Color)Red; int v = c.Blue; }",
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some = 42 }; }",
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_type_check_accepts_match_on_enum() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some = 42 }; match x { case Some: { int y = Some; } case None: { int z = 0; } } }",
     );
     assert!(result.is_ok());
 }
@@ -234,19 +242,19 @@ fn test_type_check_rejects_unknown_struct_member_access() {
 }
 
 #[test]
-fn test_type_check_rejects_enum_member_assignment() {
+fn test_type_check_rejects_enum_member_access() {
     let result = parse_and_type_check(
-        "enum Color { Red; Green; }\nvoid main() { enum Color c = (enum Color)Red; c.Red = 1; }",
+        "enum Color { Red; Green; }\nvoid main() { enum Color c = { .Red }; int v = c.Red; }",
     );
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .message
-        .contains("cannot assign to enum members"));
+        .contains("cannot access enum variants directly"));
 }
 
 #[test]
-fn test_type_check_rejects_unknown_aggregate_type_declaration_use() {
+fn test_type_check_rejects_unknown_type_declaration_use() {
     let result = parse_and_type_check("void main() { struct Missing x = { .x = 0 }; }");
     assert!(result.is_err());
     assert!(result
@@ -256,26 +264,17 @@ fn test_type_check_rejects_unknown_aggregate_type_declaration_use() {
 }
 
 #[test]
-fn test_type_check_rejects_unknown_enum_member_access() {
-    let result = parse_and_type_check(
-        "enum Color { Red; Green; }\nvoid main() { enum Color c = (enum Color)Red; int v = c.Blue; }",
-    );
-    assert!(result.is_err());
-    assert!(result.unwrap_err().message.contains("unknown enumerator"));
-}
-
-#[test]
-fn test_type_check_rejects_member_access_on_non_aggregate_value() {
+fn test_type_check_rejects_member_access_on_non_struct_value() {
     let result = parse_and_type_check("void main() { int x = 0; int y = x.foo; }");
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .message
-        .contains("member access requires struct or enum base type"));
+        .contains("member access requires struct base type"));
 }
 
 #[test]
-fn test_type_check_rejects_duplicate_aggregate_declarations() {
+fn test_type_check_rejects_duplicate_type_declarations() {
     let result = parse_and_type_check(
         "struct Point { int x; }\nstruct Point { int y; }\nvoid main() { int z = 0; }",
     );
@@ -284,4 +283,48 @@ fn test_type_check_rejects_duplicate_aggregate_declarations() {
         .unwrap_err()
         .message
         .contains("duplicate type declaration"));
+}
+
+#[test]
+fn test_type_check_rejects_duplicate_struct_init_fields() {
+    let result = parse_and_type_check(
+        "struct Point { int x; int y; }\nvoid main() { struct Point p = { .x = 1, .x = 2, .y = 3 }; }",
+    );
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .message
+        .contains("duplicate field"));
+}
+
+#[test]
+fn test_type_check_rejects_cast_mismatch_in_enum_decl() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = (int){ .Some = 42 }; }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_type_check_rejects_unit_variant_with_payload_in_decl() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .None = 42 }; }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_type_check_rejects_payload_variant_without_arg_in_decl() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some }; }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_type_check_accepts_cast_in_expression() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid foo(enum Option x) { }\nvoid main() { foo((enum Option){ .Some = 42 }); }",
+    );
+    assert!(result.is_ok());
 }

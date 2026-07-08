@@ -161,26 +161,18 @@ fn while_statement(input: &str) -> IResult<&str, UncheckedStmt> {
     ))
 }
 
-/// Parse a single match arm: `case variant(binding): statement`.
+/// Parse a single match arm: `case variant: statement`.
 fn match_arm(input: &str) -> IResult<&str, MatchArm<()>> {
     map(
         tuple((
             preceded(multispace0, tag("case")),
             preceded(multispace1, identifier),
-            opt(preceded(
-                multispace0,
-                delimited(
-                    preceded(multispace0, char('(')),
-                    preceded(multispace0, identifier),
-                    preceded(multispace0, char(')')),
-                ),
-            )),
             preceded(multispace0, char(':')),
             statement,
         )),
-        |(_, variant, binding, _, body)| MatchArm {
+        |(_, variant, _, body)| MatchArm {
             variant: variant.to_string(),
-            binding: binding.map(|s| s.to_string()),
+            binding: None,
             body: Box::new(body),
         },
     )(input)

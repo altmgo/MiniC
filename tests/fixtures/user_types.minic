@@ -1,10 +1,12 @@
 struct Point { bool valid; int[][] coords; }
-enum Kind { A; B = 2; }
+enum Kind { int B; A; }
 
 void main() {
 	struct Point p = { .valid = true, .coords = [[1, 2], [3, 4]] };
 	print(p.valid);
-	enum Kind k = (enum Kind)B;
-	int v = k.B;
-	print(v);
+	enum Kind k = { .B = 42 };
+	match k {
+		case B: { print(B); }
+		case A: { print(0); }
+	}
 }

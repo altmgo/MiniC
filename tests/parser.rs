@@ -1,7 +1,7 @@
 //! Integration tests for the MiniC parser.
 
 use mini_c::ir::ast::{
-    AgtTypeMember, AgtTypeSpecifier, Expr, ExprD, IdentifierDecl, Literal, Statement, Type,
+    Expr, ExprD, IdentifierDecl, Literal, Statement, Type, UserTypeKind, UserTypeMember,
 };
 use mini_c::parser::{
     assignment, expression, fun_decl, identifier,
@@ -11,7 +11,7 @@ use mini_c::parser::{
         boolean_literal, float_literal, integer_literal, string_literal, Literal as ParserLiteral,
     },
     statement,
-    types::{aggregate_type_decl, type_definition},
+    types::{type_definition, user_type_decl},
 };
 use nom::combinator::all_consuming;
 
@@ -123,7 +123,7 @@ fn test_identifier_accept_true_prefix() {
 // --- Types ---
 
 #[test]
-fn test_aggregate_type_definition() {
+fn test_user_type_definition() {
     assert_eq!(
         type_definition("struct Point"),
         Ok(("", Type::Struct("Point".to_string())))
@@ -138,7 +138,7 @@ fn test_aggregate_type_definition() {
 }
 
 #[test]
-fn test_aggregate_type_definition_array() {
+fn test_user_type_definition_array() {
     assert_eq!(
         type_definition("struct S[]"),
         Ok(("", Type::Array(Box::new(Type::Struct("S".to_string())))))
@@ -146,7 +146,7 @@ fn test_aggregate_type_definition_array() {
 }
 
 #[test]
-fn test_aggregate_type_identifier_decl() {
+fn test_user_type_identifier_decl() {
     assert_eq!(
         identifier_decl("struct Point p"),
         Ok((
@@ -174,22 +174,22 @@ fn test_aggregate_type_identifier_decl() {
 
 #[test]
 fn test_struct_decl() {
-    let result = all_consuming(aggregate_type_decl)("struct Point { int x; float y; }")
+    let result = all_consuming(user_type_decl)("struct Point { int x; float y; }")
         .unwrap()
         .1;
-    assert_eq!(result.specifier, AgtTypeSpecifier::Struct);
+    assert_eq!(result.specifier, UserTypeKind::Struct);
     assert_eq!(result.identifier, "Point");
     assert_eq!(result.members.len(), 2);
     assert_eq!(
         result.members[0],
-        AgtTypeMember::Field(IdentifierDecl {
+        UserTypeMember::Field(IdentifierDecl {
             name: "x".into(),
             ty: Type::Int,
         })
     );
     assert_eq!(
         result.members[1],
-        AgtTypeMember::Field(IdentifierDecl {
+        UserTypeMember::Field(IdentifierDecl {
             name: "y".into(),
             ty: Type::Float,
         })
@@ -198,109 +198,102 @@ fn test_struct_decl() {
 
 #[test]
 fn test_union_decl_rejected() {
-    assert!(all_consuming(aggregate_type_decl)("union Value { int i; float f; }").is_err());
+    assert!(all_consuming(user_type_decl)("union Value { int i; float f; }").is_err());
 }
 
 #[test]
 fn test_enum_decl() {
-    let result = all_consuming(aggregate_type_decl)("enum Kind { OK; Err = -1; }")
+    let result = all_consuming(user_type_decl)("enum Kind { OK; Err; }")
         .unwrap()
         .1;
-    assert_eq!(result.specifier, AgtTypeSpecifier::Enum);
+    assert_eq!(result.specifier, UserTypeKind::Enum);
     assert_eq!(result.identifier, "Kind");
     assert_eq!(result.members.len(), 2);
     assert_eq!(
         result.members[0],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "OK".into(),
             ty: None,
-            value: None,
         }
     );
     assert_eq!(
         result.members[1],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "Err".into(),
             ty: None,
-            value: Some(-1),
         }
     );
 }
 
 #[test]
 fn test_enum_with_payload_decl() {
-    let result = all_consuming(aggregate_type_decl)("enum Option { Some(int); None; }")
+    let result = all_consuming(user_type_decl)("enum Option { int Some; None; }")
         .unwrap()
         .1;
-    assert_eq!(result.specifier, AgtTypeSpecifier::Enum);
+    assert_eq!(result.specifier, UserTypeKind::Enum);
     assert_eq!(result.identifier, "Option");
     assert_eq!(result.members.len(), 2);
     assert_eq!(
         result.members[0],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "Some".into(),
             ty: Some(Type::Int),
-            value: None,
         }
     );
     assert_eq!(
         result.members[1],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "None".into(),
             ty: None,
-            value: None,
         }
     );
 }
 
 #[test]
-fn test_enum_with_payload_and_value_decl() {
-    let result = all_consuming(aggregate_type_decl)("enum E { A(float); B = 1; C(int); }")
+fn test_enum_with_payload_and_unit_variants() {
+    let result = all_consuming(user_type_decl)("enum E { float A; B; int C; }")
         .unwrap()
         .1;
     assert_eq!(result.members.len(), 3);
     assert_eq!(
         result.members[0],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "A".into(),
             ty: Some(Type::Float),
-            value: None,
         }
     );
     assert_eq!(
         result.members[1],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "B".into(),
             ty: None,
-            value: Some(1),
         }
     );
     assert_eq!(
         result.members[2],
-        AgtTypeMember::EnumVariant {
+        UserTypeMember::EnumVariant {
             name: "C".into(),
             ty: Some(Type::Int),
-            value: None,
         }
     );
 }
 
 #[test]
-fn test_aggregate_type_decl_reject_empty_members() {
-    assert!(all_consuming(aggregate_type_decl)("struct S { }").is_err());
-    assert!(all_consuming(aggregate_type_decl)("enum E { }").is_err());
+fn test_user_type_decl_reject_empty_members() {
+    assert!(all_consuming(user_type_decl)("struct S { }").is_err());
+    assert!(all_consuming(user_type_decl)("enum E { }").is_err());
 }
 
 #[test]
-fn test_aggregate_type_decl_reject_missing_member_semicolon() {
-    assert!(all_consuming(aggregate_type_decl)("struct S { int x }").is_err());
-    assert!(all_consuming(aggregate_type_decl)("enum E { A = 1 }").is_err());
+fn test_user_type_decl_reject_missing_member_semicolon() {
+    assert!(all_consuming(user_type_decl)("struct S { int x }").is_err());
+    assert!(all_consuming(user_type_decl)("enum E { int A }").is_err());
 }
 
 #[test]
-fn test_aggregate_type_decl_reject_reserved_identifier_name() {
-    assert!(all_consuming(aggregate_type_decl)("struct return { int x; }").is_err());
-    assert!(all_consuming(aggregate_type_decl)("enum return { A; }").is_err());
+fn test_user_type_decl_reject_reserved_identifier_name() {
+    assert!(all_consuming(user_type_decl)("struct return { int x; }").is_err());
+    assert!(all_consuming(user_type_decl)("enum return { A; }").is_err());
 }
 
 // --- Expressions ---
@@ -977,22 +970,22 @@ fn test_invalid_member_access_trailing_dot() {
 #[test]
 fn test_struct_init_expression() {
     let result = expression("{ .x = 1, .y = 2 }").unwrap().1;
-    assert!(matches!(result.exp, Expr::StructInit { ref fields } if fields.len() == 2));
-    if let Expr::StructInit { ref fields } = result.exp {
+    assert!(matches!(result.exp, Expr::Init { ref fields } if fields.len() == 2));
+    if let Expr::Init { ref fields } = result.exp {
         assert_eq!(fields[0].0, "x");
-        assert_eq!(fields[0].1.exp, Expr::Literal(Literal::Int(1)));
+        assert_eq!(fields[0].1.as_ref().unwrap().exp, Expr::Literal(Literal::Int(1)));
         assert_eq!(fields[1].0, "y");
-        assert_eq!(fields[1].1.exp, Expr::Literal(Literal::Int(2)));
+        assert_eq!(fields[1].1.as_ref().unwrap().exp, Expr::Literal(Literal::Int(2)));
     }
 }
 
 #[test]
 fn test_struct_init_single_field() {
     let result = expression("{ .name = \"hello\" }").unwrap().1;
-    assert!(matches!(result.exp, Expr::StructInit { ref fields } if fields.len() == 1));
-    if let Expr::StructInit { ref fields } = result.exp {
+    assert!(matches!(result.exp, Expr::Init { ref fields } if fields.len() == 1));
+    if let Expr::Init { ref fields } = result.exp {
         assert_eq!(fields[0].0, "name");
-        assert_eq!(fields[0].1.exp, Expr::Literal(Literal::Str("hello".to_string())));
+        assert_eq!(fields[0].1.as_ref().unwrap().exp, Expr::Literal(Literal::Str("hello".to_string())));
     }
 }
 
@@ -1017,7 +1010,7 @@ fn test_cast_with_struct_type() {
     let result = all_consuming(expression)("(struct Point){ .x = 1 }").unwrap().1;
     assert!(matches!(result.exp, Expr::Cast { ref ty, .. } if matches!(ty, Type::Struct(_))));
     if let Expr::Cast { ref expr, .. } = result.exp {
-        assert!(matches!(expr.exp, Expr::StructInit { .. }));
+        assert!(matches!(expr.exp, Expr::Init { .. }));
     }
 }
 
@@ -1031,14 +1024,14 @@ fn test_cast_precedence() {
 
 #[test]
 fn test_match_statement() {
-    let result = statement("match x { case Some(v): { y = v; } case None: { z = 0; } }")
+    let result = statement("match x { case Some: { y = Some; } case None: { z = 0; } }")
         .unwrap().1;
     assert!(matches!(result.stmt, Statement::Match { .. }));
     if let Statement::Match { ref target, ref arms } = result.stmt {
         assert!(matches!(target.exp, Expr::Ident(ref s) if s == "x"));
         assert_eq!(arms.len(), 2);
         assert_eq!(arms[0].variant, "Some");
-        assert_eq!(arms[0].binding, Some("v".to_string()));
+        assert_eq!(arms[0].binding, None);
         assert_eq!(arms[1].variant, "None");
         assert_eq!(arms[1].binding, None);
     }

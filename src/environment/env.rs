@@ -11,7 +11,7 @@
 //! * [`set`](Environment::set) — update an existing binding.
 //! * [`snapshot`](Environment::snapshot) / [`restore`](Environment::restore)
 //!   — save and restore the entire map (used for scoping).
-//! * [`aggregate_type`](Environment::aggregate_type) — look up an aggregate
+//! * [`get_type_decl`](Environment::get_type_decl) — look up a user-defined
 //!   type declaration from the shared type-declaration table.
 //!
 //! Additionally, [`names`](Environment::names) and
@@ -58,12 +58,12 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ir::ast::{AggregateTypeDecl, AgtTypeSpecifier};
+use crate::ir::ast::{UserTypeDecl, UserTypeKind};
 
-pub type TypeDeclKey = (AgtTypeSpecifier, String);
-pub type TypeDeclMap = HashMap<TypeDeclKey, AggregateTypeDecl>;
+pub type TypeDeclKey = (UserTypeKind, String);
+pub type TypeDeclMap = HashMap<TypeDeclKey, UserTypeDecl>;
 
-pub fn build_type_decl_map(decls: &[AggregateTypeDecl]) -> TypeDeclMap {
+pub fn build_type_decl_map(decls: &[UserTypeDecl]) -> TypeDeclMap {
     let mut type_map = TypeDeclMap::new();
     for decl in decls {
         let key = (decl.specifier.clone(), decl.identifier.clone());
@@ -94,17 +94,17 @@ impl<V: Clone> Environment<V> {
         }
     }
 
-    pub fn aggregate_type(
+    pub fn get_type_decl(
         &self,
-        specifier: &AgtTypeSpecifier,
+        specifier: &UserTypeKind,
         identifier: &str,
-    ) -> Option<&AggregateTypeDecl> {
+    ) -> Option<&UserTypeDecl> {
         self.type_decls
             .get(&(specifier.clone(), identifier.to_string()))
     }
 
-    pub fn has_aggregate_type(&self, specifier: &AgtTypeSpecifier, identifier: &str) -> bool {
-        self.aggregate_type(specifier, identifier).is_some()
+    pub fn has_type_decl(&self, specifier: &UserTypeKind, identifier: &str) -> bool {
+        self.get_type_decl(specifier, identifier).is_some()
     }
 
     /// Bind `name` to `value`, overwriting any existing binding.
@@ -145,6 +145,11 @@ impl<V: Clone> Environment<V> {
     /// Remove any binding whose name is not in `outer` (for block-exit cleanup).
     pub fn remove_new(&mut self, outer: &HashSet<String>) {
         self.bindings.retain(|k, _| outer.contains(k));
+    }
+
+    /// Remove a single binding by name.
+    pub fn remove(&mut self, name: &str) {
+        self.bindings.remove(name);
     }
 }
 

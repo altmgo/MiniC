@@ -48,9 +48,9 @@
 //! compatibility check (`types_compatible`) treats `Any` as matching
 //! everything, keeping the special case local to one function.
 
-/// Aggregate types: struct or enum (union removed)
+/// User-defined type kinds: struct or enum.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum AgtTypeSpecifier {
+pub enum UserTypeKind {
     Struct,
     Enum,
 }
@@ -129,9 +129,9 @@ pub enum Expr<Ty> {
         base: Box<ExprD<Ty>>,
         member: String,
     },
-    /// Struct initializer: `{ .field = expr, ... }`
-    StructInit {
-        fields: Vec<(String, ExprD<Ty>)>,
+    /// Struct or enum initializer: `{ .field = expr, ... }` or `{ .field, ... }`
+    Init {
+        fields: Vec<(String, Option<ExprD<Ty>>)>,
     },
     /// Type cast: `(type)expr`
     Cast {
@@ -207,23 +207,22 @@ pub struct IdentifierDecl {
     pub ty: Type,
 }
 
-/// A field or enumerator inside an aggregate type declaration.
+/// A field or enumerator inside a user-defined type declaration.
 #[derive(Debug, Clone, PartialEq)]
-pub enum AgtTypeMember {
+pub enum UserTypeMember {
     Field(IdentifierDecl),
     EnumVariant {
         name: String,
         ty: Option<Type>,
-        value: Option<i64>,
     },
 }
 
-/// An aggregate type declaration: struct, union, or enum.
+/// A user-defined type declaration: struct or enum.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AggregateTypeDecl {
-    pub specifier: AgtTypeSpecifier,
+pub struct UserTypeDecl {
+    pub specifier: UserTypeKind,
     pub identifier: String,
-    pub members: Vec<AgtTypeMember>,
+    pub members: Vec<UserTypeMember>,
 }
 
 /// A function declaration.
@@ -238,7 +237,7 @@ pub struct FunDecl<Ty> {
 /// A complete MiniC program: top-level type declarations and function declarations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program<Ty> {
-    pub type_declarations: Vec<AggregateTypeDecl>,
+    pub type_declarations: Vec<UserTypeDecl>,
     pub functions: Vec<FunDecl<Ty>>,
 }
 
