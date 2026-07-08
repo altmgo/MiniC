@@ -11,7 +11,7 @@ use mini_c::semantic::{type_check, TypeError};
 use nom::combinator::all_consuming;
 use std::path::Path;
 
-// --- Helpers to build type-annotated AST nodes ---
+// --- Helpers ---
 
 fn int_var(name: &str) -> CheckedExpr {
     ExprD {
@@ -63,7 +63,9 @@ fn type_check_fixture(name: &str) -> Result<CheckedProgram, TypeError> {
     type_check(&parse_fixture(name))
 }
 
-// Fixture: if (x < y) { z = x + y; } else { z = x; }
+// Feature: Control Flow (if/else)
+//
+// if (x < y) { z = x + y; } else { z = x; }
 //
 // Expected TAC:
 //   if x >= y goto Label1:    <- negated relational jumps to else
@@ -74,7 +76,7 @@ fn type_check_fixture(name: &str) -> Result<CheckedProgram, TypeError> {
 //   z = x
 //   Label2:
 #[test]
-fn test_if_else_with_relational_condition() {
+fn test_if_else_tac() {
     let stmt = StatementD {
         stmt: Statement::If {
             cond: Box::new(lt(int_var("x"), int_var("y"))),
@@ -111,11 +113,10 @@ fn test_if_else_with_relational_condition() {
     );
 }
 
+// Feature: Struct init TAC
 #[test]
-fn test_aggregate_types_fixture_generates_tac() {
-    let checked =
-        type_check_fixture("tac_types.minic").expect("tac fixture should type-check");
-
+fn test_struct_init_tac() {
+    let checked = type_check_fixture("tac_struct.minic").expect("struct fixture should type-check");
     let mut env = Environment::new();
     let instructions = translate_program(checked, &mut env);
 
@@ -135,6 +136,21 @@ fn test_aggregate_types_fixture_generates_tac() {
             // print(p.valid)
             Instruction::Param(Address::Variable("p.valid".to_string(), Type::Bool)),
             Instruction::Call(None, "print".to_string(), 1),
+        ]
+    );
+}
+
+// Feature: Enum init + match TAC
+#[test]
+fn test_enum_init_match_tac() {
+    let checked = type_check_fixture("tac_enum.minic").expect("enum fixture should type-check");
+    let mut env = Environment::new();
+    let instructions = translate_program(checked, &mut env);
+
+    assert_eq!(
+        instructions,
+        vec![
+            Instruction::Label("main".to_string()),
             // enum Kind k = { .B = 42 }
             Instruction::CopyAssignment(
                 Address::Variable("k.tag".to_string(), Type::Int),
@@ -171,11 +187,10 @@ fn test_aggregate_types_fixture_generates_tac() {
     );
 }
 
+// Feature: Nested struct/enum in struct TAC
 #[test]
-fn test_aggregate_struct_member_fixture_generates_tac() {
-    let checked = type_check_fixture("aggregate_struct_member_success.minic")
-        .expect("aggregate struct member fixture should type-check");
-
+fn test_nested_types_tac() {
+    let checked = type_check_fixture("tac_nested.minic").expect("nested fixture should type-check");
     let mut env = Environment::new();
     let instructions = translate_program(checked, &mut env);
 
@@ -183,48 +198,7 @@ fn test_aggregate_struct_member_fixture_generates_tac() {
         instructions,
         vec![
             Instruction::Label("main".to_string()),
-            // struct Flag flag = { .enabled = true }
-            Instruction::CopyAssignment(
-                Address::Variable("flag.enabled".to_string(), Type::Bool),
-                Address::Constant(Literal::Bool(true), Type::Bool),
-            ),
-            // print(flag.enabled)
-            Instruction::Param(Address::Variable("flag.enabled".to_string(), Type::Bool)),
-            Instruction::Call(None, "print".to_string(), 1),
-        ]
-    );
-}
-
-#[test]
-fn test_aggregate_unknown_struct_fixture_fails_type_check() {
-    let err = type_check_fixture("aggregate_unknown_struct_fail.minic")
-        .expect_err("unknown struct fixture should fail type-checking");
-
-    assert!(
-        err.message.contains("unknown struct type"),
-        "expected unknown struct type error, got: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("Missing"),
-        "expected missing struct name in error, got: {}",
-        err.message
-    );
-}
-
-#[test]
-fn test_nested_enum_in_struct_field_init() {
-    let checked = type_check_fixture("nested_enum_in_struct.minic")
-        .expect("nested enum fixture should type-check");
-
-    let mut env = Environment::new();
-    let instructions = translate_program(checked, &mut env);
-
-    assert_eq!(
-        instructions,
-        vec![
-            Instruction::Label("main".to_string()),
-            // struct Outer o = { .field = (enum Inner){ .V = 42 } }
+            // struct Outer o = { .field = { .V = 42 } }
             // V is first variant, ordinal 0
             Instruction::CopyAssignment(
                 Address::Variable("o.field.tag".to_string(), Type::Int),

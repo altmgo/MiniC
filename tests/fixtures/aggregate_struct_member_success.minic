@@ -1,6 +1,0 @@
-struct Flag { bool enabled; }
-
-void main() {
-    struct Flag flag = { .enabled = true };
-    print(flag.enabled);
-}

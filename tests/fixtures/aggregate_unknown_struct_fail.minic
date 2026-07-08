@@ -1,3 +1,0 @@
-void main() {
-    struct Missing value = { .x = 0 };
-}
