@@ -53,10 +53,12 @@ pub fn exec_stmt(stmt: &CheckedStmt, env: &mut Environment<Value>) -> ExecResult
         Statement::Decl { name, ty, init } => {
             let init_val = eval_expr(init, env)?;
             let stored = match ty {
-                Type::Aggregate {
-                    specifier,
-                    identifier,
-                } => build_aggregate_value(specifier, identifier, init_val, env)?,
+                Type::Struct(identifier) => {
+                    build_aggregate_value(&AgtTypeSpecifier::Struct, identifier, init_val, env)?
+                }
+                Type::Enum(identifier) => {
+                    build_aggregate_value(&AgtTypeSpecifier::Enum, identifier, init_val, env)?
+                }
                 _ => init_val,
             };
             env.declare(name.clone(), stored);
@@ -137,6 +139,9 @@ pub fn exec_stmt(stmt: &CheckedStmt, env: &mut Environment<Value>) -> ExecResult
             eval_call(name, arg_vals?, env)?;
             Ok(None)
         }
+        Statement::Match { .. } => Err(RuntimeError::new(
+            "match not yet supported in interpreter",
+        )),
     }
 }
 
@@ -284,14 +289,9 @@ fn assign_member(
                     fields.insert(member.to_string(), val);
                     Value::Struct { identifier, fields }
                 }
-                Value::Union { identifier, .. } => Value::Union {
-                    identifier,
-                    active_field: member.to_string(),
-                    value: Box::new(val),
-                },
                 other => {
                     return Err(RuntimeError::new(format!(
-                        "cannot assign member on non-aggregate value: {}",
+                        "cannot assign member on non-struct value: {}",
                         other
                     )))
                 }
@@ -331,25 +331,6 @@ fn build_aggregate_value(
                 fields,
             })
         }
-        AgtTypeSpecifier::Union => {
-            let first_field = decl
-                .members
-                .iter()
-                .find_map(|member| match member {
-                    AgtTypeMember::Field(field) => Some(field),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    RuntimeError::new(format!("union {} has no fields at runtime", identifier))
-                })?;
-
-            let coerced = coerce_value_to_type(init_val, &first_field.ty)?;
-            Ok(Value::Union {
-                identifier: identifier.to_string(),
-                active_field: first_field.name.clone(),
-                value: Box::new(coerced),
-            })
-        }
         AgtTypeSpecifier::Enum => {
             let numeric = match init_val {
                 Value::Int(n) => n,
@@ -360,7 +341,6 @@ fn build_aggregate_value(
                     )))
                 }
             };
-
             Ok(Value::Enum {
                 identifier: identifier.to_string(),
                 value: numeric,
@@ -377,30 +357,15 @@ fn default_value_for_type(ty: &Type, env: &Environment<Value>) -> Result<Value, 
         Type::Bool => Ok(Value::Bool(false)),
         Type::Str => Ok(Value::Str(String::new())),
         Type::Array(_) => Ok(Value::Array(vec![])),
-        Type::Aggregate {
-            specifier,
-            identifier,
-        } => build_aggregate_value(specifier, identifier, Value::Int(0), env),
+        Type::Struct(identifier) => {
+            build_aggregate_value(&AgtTypeSpecifier::Struct, identifier, Value::Int(0), env)
+        }
+        Type::Enum(identifier) => {
+            build_aggregate_value(&AgtTypeSpecifier::Enum, identifier, Value::Int(0), env)
+        }
         Type::Function { .. } | Type::Any => Err(RuntimeError::new(
             "cannot create default runtime value for this type",
         )),
-    }
-}
-
-fn coerce_value_to_type(val: Value, ty: &Type) -> Result<Value, RuntimeError> {
-    match (val, ty) {
-        (Value::Int(n), Type::Int) => Ok(Value::Int(n)),
-        (Value::Int(n), Type::Float) => Ok(Value::Float(n as f64)),
-        (Value::Int(n), Type::Bool) => Ok(Value::Bool(n != 0)),
-        (Value::Int(n), Type::Str) => Ok(Value::Str(n.to_string())),
-        (Value::Float(x), Type::Float) => Ok(Value::Float(x)),
-        (Value::Float(x), Type::Int) => Ok(Value::Int(x as i64)),
-        (Value::Bool(b), Type::Bool) => Ok(Value::Bool(b)),
-        (Value::Str(s), Type::Str) => Ok(Value::Str(s)),
-        (other, _) => Err(RuntimeError::new(format!(
-            "cannot coerce value {} to required type {:?}",
-            other, ty
-        ))),
     }
 }
 

@@ -32,7 +32,8 @@ use crate::{ir::ast::IdentifierDecl, parser::types::type_definition};
 
 /// Reserved words: boolean literals and type names.
 const RESERVED: &[&str] = &[
-    "true", "false", "struct", "union", "enum", "int", "float", "bool", "str", "void", "return",
+    "true", "false", "struct", "enum", "int", "float", "bool", "str", "void", "return",
+    "match", "case", "if", "else", "while",
 ];
 
 /// Parse an identifier (variable name).

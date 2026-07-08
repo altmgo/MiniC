@@ -40,16 +40,16 @@
 //! suffixes in a loop using the same pattern as the `primary` parser in
 //! `expressions.rs`, producing a left-associative `Index` chain.
 
-use crate::ir::ast::{Expr, ExprD, Statement, StatementD, UncheckedExpr, UncheckedStmt};
+use crate::ir::ast::{Expr, ExprD, MatchArm, Statement, StatementD, UncheckedExpr, UncheckedStmt};
 use crate::parser::expressions::{expression, parse_call};
 use crate::parser::identifiers::identifier;
 use crate::parser::types::type_definition;
 use nom::{
     branch::alt,
     bytes::complete::tag,
-    character::complete::{char, multispace0},
+    character::complete::{char, multispace0, multispace1},
     combinator::{map, opt},
-    multi::many0,
+    multi::{many0, many1},
     sequence::{delimited, preceded, tuple},
     IResult,
 };
@@ -58,7 +58,7 @@ fn wrap(s: Statement<()>) -> UncheckedStmt {
     StatementD { stmt: s, ty: () }
 }
 
-/// Parse any statement: block | if | while | return | decl | call | assignment.
+/// Parse any statement: block | if | while | match | return | decl | call | assignment.
 pub fn statement(input: &str) -> IResult<&str, UncheckedStmt> {
     preceded(
         multispace0,
@@ -66,6 +66,7 @@ pub fn statement(input: &str) -> IResult<&str, UncheckedStmt> {
             block_statement,
             if_statement,
             while_statement,
+            match_statement,
             return_statement,
             decl_statement,
             call_statement,
@@ -158,6 +159,52 @@ fn while_statement(input: &str) -> IResult<&str, UncheckedStmt> {
             body: Box::new(body),
         }),
     ))
+}
+
+/// Parse a single match arm: `case variant(binding): statement`.
+fn match_arm(input: &str) -> IResult<&str, MatchArm<()>> {
+    map(
+        tuple((
+            preceded(multispace0, tag("case")),
+            preceded(multispace1, identifier),
+            opt(preceded(
+                multispace0,
+                delimited(
+                    preceded(multispace0, char('(')),
+                    preceded(multispace0, identifier),
+                    preceded(multispace0, char(')')),
+                ),
+            )),
+            preceded(multispace0, char(':')),
+            statement,
+        )),
+        |(_, variant, binding, _, body)| MatchArm {
+            variant: variant.to_string(),
+            binding: binding.map(|s| s.to_string()),
+            body: Box::new(body),
+        },
+    )(input)
+}
+
+/// Parse a match statement: `match expr { arm+ }`.
+fn match_statement(input: &str) -> IResult<&str, UncheckedStmt> {
+    map(
+        tuple((
+            preceded(multispace0, tag("match")),
+            preceded(multispace1, expression),
+            delimited(
+                preceded(multispace0, char('{')),
+                many1(preceded(multispace0, match_arm)),
+                preceded(multispace0, char('}')),
+            ),
+        )),
+        |(_, target, arms)| {
+            wrap(Statement::Match {
+                target: Box::new(target),
+                arms,
+            })
+        },
+    )(input)
 }
 
 /// Parse an lvalue: identifier followed by zero or more `[ expr ]` or `.member` suffixes.

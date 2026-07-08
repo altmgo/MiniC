@@ -28,18 +28,24 @@ fn agt_member_field(input: &str) -> IResult<&str, AgtTypeMember> {
     )(input)
 }
 
-fn agt_member_enumerator(input: &str) -> IResult<&str, AgtTypeMember> {
+fn agt_member_enum_variant(input: &str) -> IResult<&str, AgtTypeMember> {
     map(
         tuple((
             preceded(multispace0, identifier),
+            opt(delimited(
+                preceded(multispace0, char('(')),
+                preceded(multispace0, type_definition),
+                preceded(multispace0, char(')')),
+            )),
             opt(preceded(
                 preceded(multispace0, char('=')),
                 preceded(multispace0, integer_literal),
             )),
             preceded(multispace0, char(';')),
         )),
-        |(name, value, _)| AgtTypeMember::Enumerator {
+        |(name, payload, value, _)| AgtTypeMember::EnumVariant {
             name: name.to_string(),
+            ty: payload,
             value,
         },
     )(input)
@@ -56,13 +62,6 @@ fn aggregate_type_name(input: &str) -> IResult<&str, (AgtTypeSpecifier, String)>
         ),
         map(
             tuple((
-                preceded(multispace0, tag("union")),
-                preceded(multispace1, identifier),
-            )),
-            |(_, name)| (AgtTypeSpecifier::Union, name.to_string()),
-        ),
-        map(
-            tuple((
                 preceded(multispace0, tag("enum")),
                 preceded(multispace1, identifier),
             )),
@@ -76,8 +75,8 @@ pub fn aggregate_type_decl(input: &str) -> IResult<&str, AggregateTypeDecl> {
     let (rest, (specifier, identifier)) = aggregate_type_name(input)?;
 
     let member_parser = match specifier {
-        AgtTypeSpecifier::Struct | AgtTypeSpecifier::Union => agt_member_field,
-        AgtTypeSpecifier::Enum => agt_member_enumerator,
+        AgtTypeSpecifier::Struct => agt_member_field,
+        AgtTypeSpecifier::Enum => agt_member_enum_variant,
     };
 
     let (rest, members) = delimited(
@@ -100,12 +99,14 @@ fn base_type(input: &str) -> IResult<&str, Type> {
     preceded(
         multispace0,
         alt((
-            map(aggregate_type_name, |(specifier, identifier)| {
-                Type::Aggregate {
-                    specifier,
-                    identifier,
-                }
-            }),
+            map(
+                pair(tag("struct"), preceded(multispace1, identifier)),
+                |(_, name)| Type::Struct(name.to_string()),
+            ),
+            map(
+                pair(tag("enum"), preceded(multispace1, identifier)),
+                |(_, name)| Type::Enum(name.to_string()),
+            ),
             map(tag("int"), |_| Type::Int),
             map(tag("float"), |_| Type::Float),
             map(tag("bool"), |_| Type::Bool),

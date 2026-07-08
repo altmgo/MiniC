@@ -191,54 +191,36 @@ pub fn eval_expr(expr: &CheckedExpr, env: &mut Environment<Value>) -> Result<Val
         Expr::Member { base, member } => {
             let base_val = eval_expr(base, env)?;
             match &base.ty {
-                Type::Aggregate {
-                    specifier,
-                    identifier,
-                } => match specifier {
-                    AgtTypeSpecifier::Struct => match base_val {
-                        Value::Struct { fields, .. } => {
-                            fields.get(member).cloned().ok_or_else(|| {
-                                RuntimeError::new(format!(
-                                    "missing struct member '{}.{}'",
-                                    identifier, member
-                                ))
-                            })
-                        }
-                        other => Err(RuntimeError::new(format!(
-                            "expected struct runtime value for {}, got {}",
-                            identifier, other
-                        ))),
-                    },
-                    AgtTypeSpecifier::Union => match base_val {
-                        Value::Union {
-                            active_field,
-                            value,
-                            ..
-                        } => {
-                            if &active_field == member {
-                                Ok(*value)
-                            } else {
-                                Err(RuntimeError::new(format!(
-                                    "union member '{}.{}' is inactive (active field: {})",
-                                    identifier, member, active_field
-                                )))
-                            }
-                        }
-                        other => Err(RuntimeError::new(format!(
-                            "expected union runtime value for {}, got {}",
-                            identifier, other
-                        ))),
-                    },
-                    AgtTypeSpecifier::Enum => {
-                        enum_member_value(identifier, member, env).map(Value::Int)
+                Type::Struct(identifier) => match base_val {
+                    Value::Struct { fields, .. } => {
+                        fields.get(member).cloned().ok_or_else(|| {
+                            RuntimeError::new(format!(
+                                "missing struct member '{}.{}'",
+                                identifier, member
+                            ))
+                        })
                     }
+                    other => Err(RuntimeError::new(format!(
+                        "expected struct runtime value for {}, got {}",
+                        identifier, other
+                    ))),
                 },
+                Type::Enum(identifier) => {
+                    enum_member_value(identifier, member, env).map(Value::Int)
+                }
                 other => Err(RuntimeError::new(format!(
-                    "member access requires aggregate base type, got {:?}",
+                    "member access requires struct or enum base type, got {:?}",
                     other
                 ))),
             }
         }
+        Expr::StructInit { .. } => Err(RuntimeError::new(
+            "struct init not yet supported in interpreter",
+        )),
+        Expr::Cast { expr, .. } => eval_expr(expr, env),
+        Expr::EnumVariant { .. } => Err(RuntimeError::new(
+            "enum variant not yet supported in interpreter",
+        )),
     }
 }
 
@@ -283,7 +265,7 @@ fn enum_member_value(
 
     let mut next_value: i64 = 0;
     for entry in &decl.members {
-        if let AgtTypeMember::Enumerator { name, value } = entry {
+        if let AgtTypeMember::EnumVariant { name, value, .. } = entry {
             let resolved = value.unwrap_or(next_value);
             if name == member {
                 return Ok(resolved);

@@ -48,11 +48,10 @@
 //! compatibility check (`types_compatible`) treats `Any` as matching
 //! everything, keeping the special case local to one function.
 
-/// Aggregate types: struct, union, enum
+/// Aggregate types: struct or enum (union removed)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AgtTypeSpecifier {
     Struct,
-    Union,
     Enum,
 }
 
@@ -65,10 +64,8 @@ pub enum Type {
     Bool,
     Str,
     Array(Box<Type>),
-    Aggregate {
-        specifier: AgtTypeSpecifier,
-        identifier: String,
-    },
+    Struct(String),
+    Enum(String),
     Function {
         params: Vec<Type>,
         return_type: Box<Type>,
@@ -132,6 +129,21 @@ pub enum Expr<Ty> {
         base: Box<ExprD<Ty>>,
         member: String,
     },
+    /// Struct initializer: `{ .field = expr, ... }`
+    StructInit {
+        fields: Vec<(String, ExprD<Ty>)>,
+    },
+    /// Type cast: `(type)expr`
+    Cast {
+        ty: Type,
+        expr: Box<ExprD<Ty>>,
+    },
+    /// Enum variant literal: `Variant(expr)` (resolved during type checking)
+    EnumVariant {
+        enum_name: Option<String>,
+        variant: String,
+        payload: Option<Box<ExprD<Ty>>>,
+    },
 }
 
 /// Statement with type decoration.
@@ -173,6 +185,19 @@ pub enum Statement<Ty> {
     },
     /// Return statement: `return [expr]`.
     Return(Option<Box<ExprD<Ty>>>),
+    /// Match statement: `match expr { case variant(binding): body ... }`
+    Match {
+        target: Box<ExprD<Ty>>,
+        arms: Vec<MatchArm<Ty>>,
+    },
+}
+
+/// A single arm of a match statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm<Ty> {
+    pub variant: String,
+    pub binding: Option<String>,
+    pub body: Box<StatementD<Ty>>,
 }
 
 /// An identifier with a declared type.
@@ -186,7 +211,11 @@ pub struct IdentifierDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgtTypeMember {
     Field(IdentifierDecl),
-    Enumerator { name: String, value: Option<i64> },
+    EnumVariant {
+        name: String,
+        ty: Option<Type>,
+        value: Option<i64>,
+    },
 }
 
 /// An aggregate type declaration: struct, union, or enum.

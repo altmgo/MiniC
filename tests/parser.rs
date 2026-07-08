@@ -126,49 +126,22 @@ fn test_identifier_accept_true_prefix() {
 fn test_aggregate_type_definition() {
     assert_eq!(
         type_definition("struct Point"),
-        Ok((
-            "",
-            Type::Aggregate {
-                specifier: AgtTypeSpecifier::Struct,
-                identifier: "Point".to_string(),
-            },
-        ))
-    );
-
-    assert_eq!(
-        type_definition("union Value"),
-        Ok((
-            "",
-            Type::Aggregate {
-                specifier: AgtTypeSpecifier::Union,
-                identifier: "Value".to_string(),
-            },
-        ))
+        Ok(("", Type::Struct("Point".to_string())))
     );
 
     assert_eq!(
         type_definition("enum Kind"),
-        Ok((
-            "",
-            Type::Aggregate {
-                specifier: AgtTypeSpecifier::Enum,
-                identifier: "Kind".to_string(),
-            },
-        ))
+        Ok(("", Type::Enum("Kind".to_string())))
     );
+
+    assert!(type_definition("union Value").is_err());
 }
 
 #[test]
 fn test_aggregate_type_definition_array() {
     assert_eq!(
         type_definition("struct S[]"),
-        Ok((
-            "",
-            Type::Array(Box::new(Type::Aggregate {
-                specifier: AgtTypeSpecifier::Struct,
-                identifier: "S".to_string(),
-            }))
-        ))
+        Ok(("", Type::Array(Box::new(Type::Struct("S".to_string())))))
     );
 }
 
@@ -180,27 +153,12 @@ fn test_aggregate_type_identifier_decl() {
             "",
             IdentifierDecl {
                 name: "p".to_string(),
-                ty: Type::Aggregate {
-                    specifier: AgtTypeSpecifier::Struct,
-                    identifier: "Point".to_string(),
-                },
+                ty: Type::Struct("Point".to_string()),
             }
         ))
     );
 
-    assert_eq!(
-        identifier_decl("union Value v"),
-        Ok((
-            "",
-            IdentifierDecl {
-                name: "v".to_string(),
-                ty: Type::Aggregate {
-                    specifier: AgtTypeSpecifier::Union,
-                    identifier: "Value".to_string(),
-                },
-            }
-        ))
-    );
+    assert!(identifier_decl("union Value v").is_err());
 
     assert_eq!(
         identifier_decl("enum Kind k"),
@@ -208,10 +166,7 @@ fn test_aggregate_type_identifier_decl() {
             "",
             IdentifierDecl {
                 name: "k".to_string(),
-                ty: Type::Aggregate {
-                    specifier: AgtTypeSpecifier::Enum,
-                    identifier: "Kind".to_string(),
-                },
+                ty: Type::Enum("Kind".to_string()),
             }
         ))
     );
@@ -242,27 +197,8 @@ fn test_struct_decl() {
 }
 
 #[test]
-fn test_union_decl() {
-    let result = all_consuming(aggregate_type_decl)("union Value { int i; float f; }")
-        .unwrap()
-        .1;
-    assert_eq!(result.specifier, AgtTypeSpecifier::Union);
-    assert_eq!(result.identifier, "Value");
-    assert_eq!(result.members.len(), 2);
-    assert_eq!(
-        result.members[0],
-        AgtTypeMember::Field(IdentifierDecl {
-            name: "i".into(),
-            ty: Type::Int,
-        })
-    );
-    assert_eq!(
-        result.members[1],
-        AgtTypeMember::Field(IdentifierDecl {
-            name: "f".into(),
-            ty: Type::Float,
-        })
-    );
+fn test_union_decl_rejected() {
+    assert!(all_consuming(aggregate_type_decl)("union Value { int i; float f; }").is_err());
 }
 
 #[test]
@@ -275,16 +211,76 @@ fn test_enum_decl() {
     assert_eq!(result.members.len(), 2);
     assert_eq!(
         result.members[0],
-        AgtTypeMember::Enumerator {
+        AgtTypeMember::EnumVariant {
             name: "OK".into(),
+            ty: None,
             value: None,
         }
     );
     assert_eq!(
         result.members[1],
-        AgtTypeMember::Enumerator {
+        AgtTypeMember::EnumVariant {
             name: "Err".into(),
+            ty: None,
             value: Some(-1),
+        }
+    );
+}
+
+#[test]
+fn test_enum_with_payload_decl() {
+    let result = all_consuming(aggregate_type_decl)("enum Option { Some(int); None; }")
+        .unwrap()
+        .1;
+    assert_eq!(result.specifier, AgtTypeSpecifier::Enum);
+    assert_eq!(result.identifier, "Option");
+    assert_eq!(result.members.len(), 2);
+    assert_eq!(
+        result.members[0],
+        AgtTypeMember::EnumVariant {
+            name: "Some".into(),
+            ty: Some(Type::Int),
+            value: None,
+        }
+    );
+    assert_eq!(
+        result.members[1],
+        AgtTypeMember::EnumVariant {
+            name: "None".into(),
+            ty: None,
+            value: None,
+        }
+    );
+}
+
+#[test]
+fn test_enum_with_payload_and_value_decl() {
+    let result = all_consuming(aggregate_type_decl)("enum E { A(float); B = 1; C(int); }")
+        .unwrap()
+        .1;
+    assert_eq!(result.members.len(), 3);
+    assert_eq!(
+        result.members[0],
+        AgtTypeMember::EnumVariant {
+            name: "A".into(),
+            ty: Some(Type::Float),
+            value: None,
+        }
+    );
+    assert_eq!(
+        result.members[1],
+        AgtTypeMember::EnumVariant {
+            name: "B".into(),
+            ty: None,
+            value: Some(1),
+        }
+    );
+    assert_eq!(
+        result.members[2],
+        AgtTypeMember::EnumVariant {
+            name: "C".into(),
+            ty: Some(Type::Int),
+            value: None,
         }
     );
 }
@@ -292,21 +288,18 @@ fn test_enum_decl() {
 #[test]
 fn test_aggregate_type_decl_reject_empty_members() {
     assert!(all_consuming(aggregate_type_decl)("struct S { }").is_err());
-    assert!(all_consuming(aggregate_type_decl)("union U { }").is_err());
     assert!(all_consuming(aggregate_type_decl)("enum E { }").is_err());
 }
 
 #[test]
 fn test_aggregate_type_decl_reject_missing_member_semicolon() {
     assert!(all_consuming(aggregate_type_decl)("struct S { int x }").is_err());
-    assert!(all_consuming(aggregate_type_decl)("union U { int x }").is_err());
     assert!(all_consuming(aggregate_type_decl)("enum E { A = 1 }").is_err());
 }
 
 #[test]
 fn test_aggregate_type_decl_reject_reserved_identifier_name() {
     assert!(all_consuming(aggregate_type_decl)("struct return { int x; }").is_err());
-    assert!(all_consuming(aggregate_type_decl)("union return { int x; }").is_err());
     assert!(all_consuming(aggregate_type_decl)("enum return { A; }").is_err());
 }
 
@@ -977,4 +970,144 @@ fn test_member_assignment_target() {
 #[test]
 fn test_invalid_member_access_trailing_dot() {
     assert!(all_consuming(expression)("point.").is_err());
+}
+
+// --- Struct Init ---
+
+#[test]
+fn test_struct_init_expression() {
+    let result = expression("{ .x = 1, .y = 2 }").unwrap().1;
+    assert!(matches!(result.exp, Expr::StructInit { ref fields } if fields.len() == 2));
+    if let Expr::StructInit { ref fields } = result.exp {
+        assert_eq!(fields[0].0, "x");
+        assert_eq!(fields[0].1.exp, Expr::Literal(Literal::Int(1)));
+        assert_eq!(fields[1].0, "y");
+        assert_eq!(fields[1].1.exp, Expr::Literal(Literal::Int(2)));
+    }
+}
+
+#[test]
+fn test_struct_init_single_field() {
+    let result = expression("{ .name = \"hello\" }").unwrap().1;
+    assert!(matches!(result.exp, Expr::StructInit { ref fields } if fields.len() == 1));
+    if let Expr::StructInit { ref fields } = result.exp {
+        assert_eq!(fields[0].0, "name");
+        assert_eq!(fields[0].1.exp, Expr::Literal(Literal::Str("hello".to_string())));
+    }
+}
+
+#[test]
+fn test_struct_init_empty_rejected() {
+    assert!(all_consuming(expression)("{}").is_err());
+}
+
+// --- Cast ---
+
+#[test]
+fn test_cast_expression() {
+    let result = expression("(int)1.5").unwrap().1;
+    assert!(matches!(result.exp, Expr::Cast { ref ty, .. } if *ty == Type::Int));
+    if let Expr::Cast { ref expr, .. } = result.exp {
+        assert_eq!(expr.exp, Expr::Literal(Literal::Float(1.5)));
+    }
+}
+
+#[test]
+fn test_cast_with_struct_type() {
+    let result = all_consuming(expression)("(struct Point){ .x = 1 }").unwrap().1;
+    assert!(matches!(result.exp, Expr::Cast { ref ty, .. } if matches!(ty, Type::Struct(_))));
+    if let Expr::Cast { ref expr, .. } = result.exp {
+        assert!(matches!(expr.exp, Expr::StructInit { .. }));
+    }
+}
+
+#[test]
+fn test_cast_precedence() {
+    let result = expression("(int)1.5 + 2").unwrap().1;
+    assert!(matches!(result.exp, Expr::Add(_, _)));
+}
+
+// --- Match ---
+
+#[test]
+fn test_match_statement() {
+    let result = statement("match x { case Some(v): { y = v; } case None: { z = 0; } }")
+        .unwrap().1;
+    assert!(matches!(result.stmt, Statement::Match { .. }));
+    if let Statement::Match { ref target, ref arms } = result.stmt {
+        assert!(matches!(target.exp, Expr::Ident(ref s) if s == "x"));
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[0].variant, "Some");
+        assert_eq!(arms[0].binding, Some("v".to_string()));
+        assert_eq!(arms[1].variant, "None");
+        assert_eq!(arms[1].binding, None);
+    }
+}
+
+#[test]
+fn test_match_single_arm() {
+    let result = statement("match flag { case OK: { print(1); } }")
+        .unwrap().1;
+    assert!(matches!(result.stmt, Statement::Match { ref arms, .. } if arms.len() == 1));
+    if let Statement::Match { ref target, ref arms } = result.stmt {
+        assert!(matches!(target.exp, Expr::Ident(ref s) if s == "flag"));
+        assert_eq!(arms[0].variant, "OK");
+        assert_eq!(arms[0].binding, None);
+    }
+}
+
+#[test]
+fn test_match_statement_reject_empty_arms() {
+    assert!(statement("match x { }").is_err());
+}
+
+#[test]
+fn test_match_statement_reject_no_match_keyword() {
+    assert!(statement("atch x { case A: { } }").is_err());
+}
+
+// --- Edge cases ---
+
+#[test]
+fn test_cast_reject_non_type() {
+    assert!(all_consuming(expression)("(x)1").is_err());
+    assert!(all_consuming(expression)("(not_a_type)1").is_err());
+}
+
+#[test]
+fn test_cast_reject_incomplete() {
+    assert!(all_consuming(expression)("(int)").is_err());
+}
+
+#[test]
+fn test_struct_init_missing_equals() {
+    assert!(all_consuming(expression)("{ .x 1 }").is_err());
+}
+
+#[test]
+fn test_struct_init_missing_dot() {
+    assert!(all_consuming(expression)("{ x = 1 }").is_err());
+}
+
+#[test]
+fn test_match_reject_missing_case_keyword() {
+    assert!(statement("match x { A: { } }").is_err());
+}
+
+#[test]
+fn test_match_reject_missing_colon() {
+    assert!(statement("match x { case A { } }").is_err());
+}
+
+#[test]
+fn test_cast_with_enum_type() {
+    let result = expression("(enum Color)Red").unwrap().1;
+    assert!(matches!(result.exp, Expr::Cast { ref ty, .. } if matches!(ty, Type::Enum(_))));
+}
+
+#[test]
+fn test_precedence_cast_vs_mul() {
+    // (int)2 * 3 should be Mul(Cast(Int, 2), 3), not Cast(Int, Mul(2, 3))
+    let result = expression("(int)2 * 3").unwrap().1;
+    assert!(matches!(result.exp, Expr::Mul(_, _)));
 }

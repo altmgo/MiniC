@@ -37,12 +37,13 @@
 use crate::ir::ast::{Expr, ExprD, UncheckedExpr};
 use crate::parser::identifiers::identifier;
 use crate::parser::literals::literal;
+use crate::parser::types::type_definition;
 use nom::{
     branch::alt,
     bytes::complete::tag,
     character::complete::{char, multispace0},
     combinator::map,
-    multi::separated_list0,
+    multi::{separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, tuple},
     IResult,
 };
@@ -65,10 +66,28 @@ pub fn parse_call(input: &str) -> IResult<&str, (String, Vec<UncheckedExpr>)> {
     Ok((rest, (name.to_string(), args)))
 }
 
-/// Atom: literal, call, array literal, identifier, or parenthesized expression.
+/// Atom: literal, struct init, call, array literal, cast, identifier, or parenthesized expression.
 fn atom(input: &str) -> IResult<&str, UncheckedExpr> {
     alt((
         map(literal, |l| wrap(Expr::Literal(l.into()))),
+        // Struct init: { .field = expr, ... } (requires at least one field)
+        map(
+            delimited(
+                preceded(multispace0, char('{')),
+                separated_list1(
+                    preceded(multispace0, char(',')),
+                    map(
+                        pair(
+                            preceded(multispace0, preceded(char('.'), identifier)),
+                            preceded(multispace0, preceded(char('='), expression)),
+                        ),
+                        |(name, val): (&str, UncheckedExpr)| (name.to_string(), val),
+                    ),
+                ),
+                preceded(multispace0, char('}')),
+            ),
+            |fields| wrap(Expr::StructInit { fields }),
+        ),
         map(parse_call, |(name, args)| wrap(Expr::Call { name, args })),
         map(
             delimited(
@@ -82,6 +101,20 @@ fn atom(input: &str) -> IResult<&str, UncheckedExpr> {
             |elems| wrap(Expr::ArrayLit(elems)),
         ),
         map(identifier, |s: &str| wrap(Expr::Ident(s.to_string()))),
+        // Cast: (type)expr — tried before parenthesized group, binds like unary
+        map(
+            tuple((
+                preceded(multispace0, char('(')),
+                type_definition,
+                preceded(multispace0, char(')')),
+                unary,
+            )),
+            |(_, ty, _, expr)| wrap(Expr::Cast {
+                ty,
+                expr: Box::new(expr),
+            }),
+        ),
+        // Parenthesized expression
         delimited(
             preceded(multispace0, char('(')),
             preceded(multispace0, expression),

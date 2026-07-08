@@ -178,17 +178,24 @@ fn type_check_stmt(
             if ty == &Type::Unit {
                 return Err(TypeError::new("cannot declare variable of type void"));
             }
-            if let Type::Aggregate {
-                specifier,
-                identifier,
-            } = ty
-            {
-                if !env.has_aggregate_type(specifier, identifier) {
-                    return Err(TypeError::new(format!(
-                        "unknown aggregate type: {:?} {}",
-                        specifier, identifier
-                    )));
+            match ty {
+                Type::Struct(identifier) => {
+                    if !env.has_aggregate_type(&AgtTypeSpecifier::Struct, identifier) {
+                        return Err(TypeError::new(format!(
+                            "unknown struct type: {}",
+                            identifier
+                        )));
+                    }
                 }
+                Type::Enum(identifier) => {
+                    if !env.has_aggregate_type(&AgtTypeSpecifier::Enum, identifier) {
+                        return Err(TypeError::new(format!(
+                            "unknown enum type: {}",
+                            identifier
+                        )));
+                    }
+                }
+                _ => {}
             }
             if env.get(name).is_some() {
                 return Err(TypeError::new(format!(
@@ -197,13 +204,7 @@ fn type_check_stmt(
                 )));
             }
             let init_checked = type_check_expr_to_typed(init, env)?;
-            if matches!(ty, Type::Aggregate { .. }) {
-                if init_checked.ty != Type::Int {
-                    return Err(TypeError::new(
-                        "aggregate-typed variable declarations currently require integer placeholder initializer",
-                    ));
-                }
-            } else if !types_compatible(&init_checked.ty, ty) {
+            if !types_compatible(&init_checked.ty, ty) {
                 return Err(TypeError::new(format!(
                     "declaration of {}: expected {:?}, got {:?}",
                     name, ty, init_checked.ty
@@ -305,7 +306,10 @@ fn type_check_stmt(
                 }
                 Statement::Return(Some(Box::new(checked)))
             }
-        },
+        }
+        Statement::Match { .. } => {
+            return Err(TypeError::new("match not yet supported in type checker"));
+        }
     };
     Ok(StatementD {
         stmt,
@@ -380,50 +384,43 @@ fn type_check_assign_target(
         Expr::Member { base, member } => {
             let base_ty = type_check_expr(base, env)?;
             match base_ty {
-                Type::Aggregate {
-                    specifier,
-                    identifier,
-                } => {
-                    let decl = env.aggregate_type(&specifier, &identifier).ok_or_else(|| {
-                        TypeError::new(format!(
-                            "unknown aggregate type in member assignment: {:?} {}",
-                            specifier, identifier
-                        ))
-                    })?;
+                Type::Struct(ref identifier) => {
+                    let decl = env
+                        .aggregate_type(&AgtTypeSpecifier::Struct, identifier)
+                        .ok_or_else(|| {
+                            TypeError::new(format!(
+                                "unknown struct type in member assignment: {}",
+                                identifier
+                            ))
+                        })?;
 
-                    match specifier {
-                        AgtTypeSpecifier::Struct | AgtTypeSpecifier::Union => {
-                            let field_ty = decl
-                                .members
-                                .iter()
-                                .find_map(|m| match m {
-                                    AgtTypeMember::Field(decl) if decl.name == *member => {
-                                        Some(decl.ty.clone())
-                                    }
-                                    _ => None,
-                                })
-                                .ok_or_else(|| {
-                                    TypeError::new(format!(
-                                        "unknown member '{}' on {:?} {}",
-                                        member, specifier, identifier
-                                    ))
-                                })?;
-
-                            if !types_compatible(value_ty, &field_ty) {
-                                return Err(TypeError::new(format!(
-                                    "assignment to {}.{}: expected {:?}, got {:?}",
-                                    identifier, member, field_ty, value_ty
-                                )));
+                    let field_ty = decl
+                        .members
+                        .iter()
+                        .find_map(|m| match m {
+                            AgtTypeMember::Field(decl) if decl.name == *member => {
+                                Some(decl.ty.clone())
                             }
-                            Ok(())
-                        }
-                        AgtTypeSpecifier::Enum => {
-                            Err(TypeError::new("cannot assign to enum members"))
-                        }
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            TypeError::new(format!(
+                                "unknown member '{}' on struct {}",
+                                member, identifier
+                            ))
+                        })?;
+
+                    if !types_compatible(value_ty, &field_ty) {
+                        return Err(TypeError::new(format!(
+                            "assignment to {}.{}: expected {:?}, got {:?}",
+                            identifier, member, field_ty, value_ty
+                        )));
                     }
+                    Ok(())
                 }
+                Type::Enum(_) => Err(TypeError::new("cannot assign to enum members")),
                 other => Err(TypeError::new(format!(
-                    "member assignment requires aggregate base type, got {:?}",
+                    "member assignment requires struct base type, got {:?}",
                     other
                 ))),
             }
@@ -520,6 +517,16 @@ fn type_check_expr_inner(e: &Expr<()>, env: &Environment<Type>) -> Result<Expr<T
             base: Box::new(type_check_expr_to_typed(base, env)?),
             member: member.clone(),
         }),
+        Expr::StructInit { .. } => Err(TypeError::new(
+            "struct init not yet supported in type checker",
+        )),
+        Expr::Cast { ty, expr } => Ok(Expr::Cast {
+            ty: ty.clone(),
+            expr: Box::new(type_check_expr_to_typed(expr, env)?),
+        }),
+        Expr::EnumVariant { .. } => Err(TypeError::new(
+            "enum variant not yet supported in type checker",
+        )),
     }
 }
 
@@ -652,55 +659,67 @@ fn type_check_expr(e: &UncheckedExpr, env: &Environment<Type>) -> Result<Type, T
         Expr::Member { base, member } => {
             let base_ty = type_check_expr(base, env)?;
             match base_ty {
-                Type::Aggregate {
-                    specifier,
-                    identifier,
-                } => {
-                    let decl = env.aggregate_type(&specifier, &identifier).ok_or_else(|| {
-                        TypeError::new(format!(
-                            "unknown aggregate type in member access: {:?} {}",
-                            specifier, identifier
-                        ))
-                    })?;
+                Type::Struct(ref identifier) => {
+                    let decl = env
+                        .aggregate_type(&AgtTypeSpecifier::Struct, identifier)
+                        .ok_or_else(|| {
+                            TypeError::new(format!(
+                                "unknown struct type in member access: {}",
+                                identifier
+                            ))
+                        })?;
 
-                    match specifier {
-                        AgtTypeSpecifier::Struct | AgtTypeSpecifier::Union => decl
-                            .members
-                            .iter()
-                            .find_map(|m| match m {
-                                AgtTypeMember::Field(decl) if decl.name == *member => {
-                                    Some(decl.ty.clone())
-                                }
-                                _ => None,
-                            })
-                            .ok_or_else(|| {
-                                TypeError::new(format!(
-                                    "unknown member '{}' on {:?} {}",
-                                    member, specifier, identifier
-                                ))
-                            }),
-                        AgtTypeSpecifier::Enum => {
-                            let exists = decl.members.iter().any(|m| match m {
-                                AgtTypeMember::Enumerator { name, .. } => name == member,
-                                _ => false,
-                            });
-                            if exists {
-                                Ok(Type::Int)
-                            } else {
-                                Err(TypeError::new(format!(
-                                    "unknown enumerator '{}' on enum {}",
-                                    member, identifier
-                                )))
+                    decl.members
+                        .iter()
+                        .find_map(|m| match m {
+                            AgtTypeMember::Field(decl) if decl.name == *member => {
+                                Some(decl.ty.clone())
                             }
-                        }
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            TypeError::new(format!(
+                                "unknown member '{}' on struct {}",
+                                member, identifier
+                            ))
+                        })
+                }
+                Type::Enum(ref identifier) => {
+                    let decl = env
+                        .aggregate_type(&AgtTypeSpecifier::Enum, identifier)
+                        .ok_or_else(|| {
+                            TypeError::new(format!(
+                                "unknown enum type in member access: {}",
+                                identifier
+                            ))
+                        })?;
+
+                    let exists = decl.members.iter().any(|m| match m {
+                        AgtTypeMember::EnumVariant { name, .. } => name == member,
+                        _ => false,
+                    });
+                    if exists {
+                        Ok(Type::Int)
+                    } else {
+                        Err(TypeError::new(format!(
+                            "unknown enumerator '{}' on enum {}",
+                            member, identifier
+                        )))
                     }
                 }
                 other => Err(TypeError::new(format!(
-                    "member access requires aggregate base type, got {:?}",
+                    "member access requires struct or enum base type, got {:?}",
                     other
                 ))),
             }
         }
+        Expr::StructInit { .. } => Err(TypeError::new(
+            "struct init not yet supported in type checker",
+        )),
+        Expr::Cast { ty, .. } => Ok(ty.clone()),
+        Expr::EnumVariant { .. } => Err(TypeError::new(
+            "enum variant not yet supported in type checker",
+        )),
     }
 }
 
@@ -738,16 +757,8 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
         | (Type::Unit, Type::Unit) => true,
         (Type::Int, Type::Float) | (Type::Float, Type::Int) => true,
         (Type::Array(a), Type::Array(b)) => types_compatible(a, b),
-        (
-            Type::Aggregate {
-                specifier: a_kind,
-                identifier: a_name,
-            },
-            Type::Aggregate {
-                specifier: b_kind,
-                identifier: b_name,
-            },
-        ) => a_kind == b_kind && a_name == b_name,
+        (Type::Struct(a), Type::Struct(b)) => a == b,
+        (Type::Enum(a), Type::Enum(b)) => a == b,
         _ => false,
     }
 }
