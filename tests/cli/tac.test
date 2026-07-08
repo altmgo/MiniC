@@ -1,14 +1,21 @@
-# --tac prints TAC for the aggregate type fixture
-$ ./target/debug/mini_c --tac tests/fixtures/aggregate_types.minic
+# --tac prints TAC for the user type fixture with struct/enum init and match
+$ ./target/debug/mini_c --tac tests/fixtures/tac_types.minic
 main:
-p = 0
 p.valid = true
+p.x = 42
 param p.valid
 call print, 1
-k = 0
-v = 2
-param v
+k.tag = 0
+k.payload = 42
+if k.tag != 0 goto Label2:
+B = k.payload
+param B
 call print, 1
+goto Label1:
+Label2:
+param 0
+call print, 1
+Label1:
 >=0
 
 # --tac on a type-error program fails before TAC generation

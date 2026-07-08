@@ -1,3 +1,3 @@
 void main() {
-    struct Missing value = 0;
+    struct Missing value = { .x = 0 };
 }

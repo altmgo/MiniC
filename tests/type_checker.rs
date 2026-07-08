@@ -205,7 +205,7 @@ fn test_type_check_print_wrong_arity() {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregate Types
+// User-Defined Types
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -257,10 +257,7 @@ fn test_type_check_rejects_enum_member_access() {
 fn test_type_check_rejects_unknown_type_declaration_use() {
     let result = parse_and_type_check("void main() { struct Missing x = { .x = 0 }; }");
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .message
-        .contains("unknown struct type"));
+    assert!(result.unwrap_err().message.contains("unknown struct type"));
 }
 
 #[test]
@@ -291,10 +288,7 @@ fn test_type_check_rejects_duplicate_struct_init_fields() {
         "struct Point { int x; int y; }\nvoid main() { struct Point p = { .x = 1, .x = 2, .y = 3 }; }",
     );
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .message
-        .contains("duplicate field"));
+    assert!(result.unwrap_err().message.contains("duplicate field"));
 }
 
 #[test]
@@ -327,4 +321,52 @@ fn test_type_check_accepts_cast_in_expression() {
         "enum Option { int Some; None; }\nvoid foo(enum Option x) { }\nvoid main() { foo((enum Option){ .Some = 42 }); }",
     );
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_type_check_accepts_nested_struct_init() {
+    let result = parse_and_type_check(
+        "struct Inner { int x; }\nstruct Outer { struct Inner inner; }\nvoid main() { struct Outer o = { .inner = { .x = 42 } }; }",
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_type_check_accepts_struct_init_in_call() {
+    let result = parse_and_type_check(
+        "struct Point { int x; int y; }\nvoid foo(struct Point p) { }\nvoid main() { foo({ .x = 1, .y = 2 }); }",
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_type_check_accepts_enum_init_in_struct_field() {
+    let result = parse_and_type_check(
+        "enum Inner { int V; None; }\nstruct Outer { enum Inner field; }\nvoid main() { struct Outer o = { .field = { .V = 42 } }; }",
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_type_check_accepts_enum_init_in_call() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid foo(enum Option x) { }\nvoid main() { foo({ .Some = 42 }); }",
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_type_check_rejects_struct_init_in_call_type_mismatch() {
+    let result = parse_and_type_check(
+        "struct Point { int x; }\nstruct Other { int y; }\nvoid foo(struct Point p) { }\nvoid main() { foo({ .y = 1 }); }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_type_check_rejects_enum_init_in_call_type_mismatch() {
+    let result = parse_and_type_check(
+        "enum A { int X; }\nenum B { int Y; }\nvoid foo(enum A a) { }\nvoid main() { foo({ .Y = 1 }); }",
+    );
+    assert!(result.is_err());
 }

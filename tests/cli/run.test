@@ -19,10 +19,10 @@ $ ./target/debug/mini_c --run tests/fixtures/interpreter_array.minic
 30
 >=0
 
-# --run executes aggregate type fixture and prints bool/enum values
-$ ./target/debug/mini_c --run tests/fixtures/aggregate_types.minic
+# --run executes user type fixture with match and prints bool/payload
+$ ./target/debug/mini_c --run tests/fixtures/user_types.minic
 true
-2
+42
 >=0
 
 # --run on a type-error program fails before interpretation

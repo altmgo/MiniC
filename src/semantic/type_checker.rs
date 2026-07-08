@@ -203,11 +203,7 @@ fn type_check_stmt(
                     name
                 )));
             }
-            let init_checked = match ty {
-                Type::Struct(struct_name) => type_check_struct_init(init, struct_name, env)?,
-                Type::Enum(enum_name) => type_check_enum_init(init, enum_name, env)?,
-                _ => type_check_expr_to_typed(init, env)?,
-            };
+            let init_checked = type_check_expr(init, env, Some(ty))?;
             if !types_compatible(&init_checked.ty, ty) {
                 return Err(TypeError::new(format!(
                     "declaration of {}: expected {:?}, got {:?}",
@@ -222,10 +218,10 @@ fn type_check_stmt(
             }
         }
         Statement::Assign { target, value } => {
-            let value_checked = type_check_expr_to_typed(value, env)?;
+            let value_checked = type_check_expr(value, env, None)?;
             type_check_assign_target(&target.exp, &value_checked.ty, env)?;
             Statement::Assign {
-                target: Box::new(type_check_expr_to_typed(target, env)?),
+                target: Box::new(type_check_expr(target, env, None)?),
                 value: Box::new(value_checked),
             }
         }
@@ -239,9 +235,33 @@ fn type_check_stmt(
             Statement::Block { seq: checked }
         }
         Statement::Call { name, args } => {
+            let params = match env.get(name) {
+                Some(Type::Function { params, .. }) => params,
+                Some(_) => {
+                    return Err(TypeError::new(format!(
+                        "'{}' is not a function",
+                        name
+                    )))
+                }
+                None => {
+                    return Err(TypeError::new(format!(
+                        "undefined function: {}",
+                        name
+                    )))
+                }
+            };
+            if args.len() != params.len() {
+                return Err(TypeError::new(format!(
+                    "function '{}' expects {} arguments, got {}",
+                    name,
+                    params.len(),
+                    args.len()
+                )));
+            }
             let args_checked: Result<Vec<_>, _> = args
                 .iter()
-                .map(|a| type_check_expr_to_typed(a, env))
+                .zip(params.iter())
+                .map(|(a, p)| type_check_expr(a, env, Some(p)))
                 .collect();
             let args_checked = args_checked?;
             check_call(name, &args_checked, env)?;
@@ -255,7 +275,7 @@ fn type_check_stmt(
             then_branch,
             else_branch,
         } => {
-            let cond_checked = type_check_expr_to_typed(cond, env)?;
+            let cond_checked = type_check_expr(cond, env, None)?;
             if cond_checked.ty != Type::Bool {
                 return Err(TypeError::new(format!(
                     "if condition must be Bool, got {:?}",
@@ -274,7 +294,7 @@ fn type_check_stmt(
             }
         }
         Statement::While { cond, body } => {
-            let cond_checked = type_check_expr_to_typed(cond, env)?;
+            let cond_checked = type_check_expr(cond, env, None)?;
             if cond_checked.ty != Type::Bool {
                 return Err(TypeError::new(format!(
                     "while condition must be Bool, got {:?}",
@@ -301,7 +321,7 @@ fn type_check_stmt(
                 if *expected_return == Type::Unit {
                     return Err(TypeError::new("void function must not return a value"));
                 }
-                let checked = type_check_expr_to_typed(e, env)?;
+                let checked = type_check_expr(e, env, None)?;
                 if !types_compatible(&checked.ty, expected_return) {
                     return Err(TypeError::new(format!(
                         "return type mismatch: expected {:?}, got {:?}",
@@ -312,7 +332,7 @@ fn type_check_stmt(
             }
         }
         Statement::Match { target, arms } => {
-            let target_checked = type_check_expr_to_typed(target, env)?;
+            let target_checked = type_check_expr(target, env, None)?;
             let enum_name = match &target_checked.ty {
                 Type::Enum(name) => name.clone(),
                 other => {
@@ -418,11 +438,11 @@ fn type_check_assign_target(
             Ok(())
         }
         Expr::Index { base, index } => {
-            let index_ty = type_check_expr(index, env)?;
+            let index_ty = type_check_expr(index, env, None)?.ty;
             if index_ty != Type::Int {
                 return Err(TypeError::new("array index must be Int"));
             }
-            let base_ty = type_check_expr(base, env)?;
+            let base_ty = type_check_expr(base, env, None)?.ty;
             if let Type::Array(elem) = &base_ty {
                 if **elem != *value_ty {
                     return Err(TypeError::new("assignment type mismatch"));
@@ -433,7 +453,7 @@ fn type_check_assign_target(
             Ok(())
         }
         Expr::Member { base, member } => {
-            let base_ty = type_check_expr(base, env)?;
+            let base_ty = type_check_expr(base, env, None)?.ty;
             match base_ty {
                 Type::Struct(ref identifier) => {
                     let decl = env
@@ -480,503 +500,232 @@ fn type_check_assign_target(
     }
 }
 
-fn type_check_expr_to_typed(
+/// Unified expression type checker.
+///
+/// Checks an expression and returns a [`CheckedExpr`] with the inferred type.
+/// When `expected` is `Some(Struct/Enum(..))` and the expression is an
+/// `Expr::Init`, it dispatches to the appropriate struct/enum init checker.
+/// For all other expressions, `expected` is unused (sub-expressions infer
+/// their own types).
+fn type_check_expr(
     e: &UncheckedExpr,
     env: &Environment<Type>,
+    expected: Option<&Type>,
 ) -> Result<CheckedExpr, TypeError> {
-    let ty = type_check_expr(e, env)?;
-    let exp = type_check_expr_inner(&e.exp, env)?;
-    Ok(ExprD { exp, ty })
-}
-
-fn type_check_expr_inner(e: &Expr<()>, env: &Environment<Type>) -> Result<Expr<Type>, TypeError> {
-    match e {
-        Expr::Literal(l) => Ok(Expr::Literal(l.clone())),
-        Expr::Ident(name) => Ok(Expr::Ident(name.clone())),
-        Expr::Neg(inner) => Ok(Expr::Neg(Box::new(type_check_expr_to_typed(inner, env)?))),
-        Expr::Add(l, r) => Ok(Expr::Add(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Sub(l, r) => Ok(Expr::Sub(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Mul(l, r) => Ok(Expr::Mul(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Div(l, r) => Ok(Expr::Div(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Eq(l, r) => Ok(Expr::Eq(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Ne(l, r) => Ok(Expr::Ne(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Lt(l, r) => Ok(Expr::Lt(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Le(l, r) => Ok(Expr::Le(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Gt(l, r) => Ok(Expr::Gt(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Ge(l, r) => Ok(Expr::Ge(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Not(inner) => Ok(Expr::Not(Box::new(type_check_expr_to_typed(inner, env)?))),
-        Expr::And(l, r) => Ok(Expr::And(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Or(l, r) => Ok(Expr::Or(
-            Box::new(type_check_expr_to_typed(l, env)?),
-            Box::new(type_check_expr_to_typed(r, env)?),
-        )),
-        Expr::Call { name, args } => {
-            let args_checked: Result<Vec<_>, _> = args
-                .iter()
-                .map(|a| type_check_expr_to_typed(a, env))
-                .collect();
-            Ok(Expr::Call {
-                name: name.clone(),
-                args: args_checked?,
-            })
-        }
-        Expr::ArrayLit(elems) => {
-            let elems_checked: Result<Vec<_>, _> = elems
-                .iter()
-                .map(|e| type_check_expr_to_typed(e, env))
-                .collect();
-            Ok(Expr::ArrayLit(elems_checked?))
-        }
-        Expr::Index { base, index } => Ok(Expr::Index {
-            base: Box::new(type_check_expr_to_typed(base, env)?),
-            index: Box::new(type_check_expr_to_typed(index, env)?),
-        }),
-        Expr::Member { base, member } => Ok(Expr::Member {
-            base: Box::new(type_check_expr_to_typed(base, env)?),
-            member: member.clone(),
-        }),
-        Expr::Init { .. } => Err(TypeError::new(
-            "struct/enum init used outside of variable declaration",
-        )),
-        Expr::Cast { ty, expr } => {
-            let checked_inner = match ty {
-                Type::Enum(enum_name) => {
-                    resolve_enum_variant_expr(enum_name, expr, env)?
-                }
-                _ => type_check_expr_to_typed(expr, env)?,
-            };
-            Ok(Expr::Cast {
-                ty: ty.clone(),
-                expr: Box::new(checked_inner),
-            })
-        }
-        Expr::EnumVariant { enum_name, variant, payload } => {
-            let checked_payload = match payload {
-                Some(e) => Some(Box::new(type_check_expr_to_typed(e, env)?)),
-                None => None,
-            };
-            Ok(Expr::EnumVariant {
-                enum_name: enum_name.clone(),
-                variant: variant.clone(),
-                payload: checked_payload,
-            })
-        }
-    }
-}
-
-fn resolve_enum_variant_expr(
-    enum_name: &str,
-    expr: &UncheckedExpr,
-    env: &Environment<Type>,
-) -> Result<CheckedExpr, TypeError> {
-    let decl = env
-        .get_type_decl(&UserTypeKind::Enum, enum_name)
-        .ok_or_else(|| {
-            TypeError::new(format!("unknown enum type '{}' in cast", enum_name))
-        })?;
-
-    match &expr.exp {
-        Expr::Init { fields } => {
-            if fields.len() != 1 {
-                return Err(TypeError::new(format!(
-                    "enum init requires exactly one variant, got {}",
-                    fields.len()
-                )));
-            }
-            let (variant, payload_opt) = &fields[0];
-            let member = decl
-                .members
-                .iter()
-                .find(|m| matches!(m, UserTypeMember::EnumVariant { name: n, .. } if n == variant))
-                .ok_or_else(|| {
-                    TypeError::new(format!(
-                        "unknown variant '{}' for enum {}",
-                        variant, enum_name
-                    ))
-                })?;
-            match (member, payload_opt) {
-                (UserTypeMember::EnumVariant { ty: Some(expected_ty), .. }, Some(payload_expr)) => {
-                    let checked = type_check_expr_to_typed(payload_expr, env)?;
-                    if !types_compatible(&checked.ty, expected_ty) {
-                        return Err(TypeError::new(format!(
-                            "variant '{}' expects {:?}, got {:?}",
-                            variant, expected_ty, checked.ty
-                        )));
-                    }
-                    Ok(ExprD {
-                        exp: Expr::EnumVariant {
-                            enum_name: Some(enum_name.to_string()),
-                            variant: variant.clone(),
-                            payload: Some(Box::new(checked)),
-                        },
-                        ty: Type::Enum(enum_name.to_string()),
-                    })
-                }
-                (UserTypeMember::EnumVariant { ty: None, .. }, None) => {
-                    Ok(ExprD {
-                        exp: Expr::EnumVariant {
-                            enum_name: Some(enum_name.to_string()),
-                            variant: variant.clone(),
-                            payload: None,
-                        },
-                        ty: Type::Enum(enum_name.to_string()),
-                    })
-                }
-                (UserTypeMember::EnumVariant { ty: Some(_), .. }, None) => {
-                    Err(TypeError::new(format!(
-                        "variant '{}' requires a payload value",
-                        variant
-                    )))
-                }
-                (UserTypeMember::EnumVariant { ty: None, .. }, Some(_)) => {
-                    Err(TypeError::new(format!(
-                        "variant '{}' is a unit variant and takes no payload",
-                        variant
-                    )))
-                }
-                _ => unreachable!(),
-            }
-        }
-        other => Err(TypeError::new(format!(
-            "enum cast requires {{ .variant [= expr] }}, got {:?}",
-            other
-        ))),
-    }
-}
-
-fn type_check_struct_init(
-    init: &UncheckedExpr,
-    struct_name: &str,
-    env: &Environment<Type>,
-) -> Result<CheckedExpr, TypeError> {
-    match &init.exp {
-        Expr::Init { fields } => {
-            let decl = env
-                .get_type_decl(&UserTypeKind::Struct, struct_name)
-                .ok_or_else(|| {
-                    TypeError::new(format!("unknown struct type: {}", struct_name))
-                })?;
-
-            let mut expected_fields: std::collections::HashSet<String> = decl
-                .members
-                .iter()
-                .filter_map(|m| match m {
-                    UserTypeMember::Field(f) => Some(f.name.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            let mut checked_fields = Vec::new();
-            for (field_name, field_expr_opt) in fields {
-                let field_expr = field_expr_opt.as_ref().ok_or_else(|| {
-                    TypeError::new(format!(
-                        "field '{}' in struct {} must have a value",
-                        field_name, struct_name
-                    ))
-                })?;
-
-                let field_decl = decl.members.iter().find_map(|m| match m {
-                    UserTypeMember::Field(f) if f.name == *field_name => Some(f),
-                    _ => None,
-                }).ok_or_else(|| {
-                    TypeError::new(format!(
-                        "unknown field '{}' in struct {}",
-                        field_name, struct_name
-                    ))
-                })?;
-
-                let checked = type_check_expr_to_typed(field_expr, env)?;
-                if !types_compatible(&checked.ty, &field_decl.ty) {
-                    return Err(TypeError::new(format!(
-                        "field '{}' expects {:?}, got {:?}",
-                        field_name, field_decl.ty, checked.ty
-                    )));
-                }
-                if !expected_fields.remove(field_name) {
-                    return Err(TypeError::new(format!(
-                        "duplicate field '{}' in struct {} initializer",
-                        field_name, struct_name
-                    )));
-                }
-                checked_fields.push((field_name.clone(), Some(checked)));
-            }
-
-            if !expected_fields.is_empty() {
-                return Err(TypeError::new(format!(
-                    "missing fields in struct {} initializer: {:?}",
-                    struct_name,
-                    expected_fields.iter().collect::<Vec<_>>()
-                )));
-            }
-
-            Ok(ExprD {
-                exp: Expr::Init {
-                    fields: checked_fields,
-                },
-                ty: Type::Struct(struct_name.to_string()),
-            })
-        }
-        other => Err(TypeError::new(format!(
-            "struct declaration requires {{ .field = expr, ... }}, got {:?}",
-            other
-        ))),
-    }
-}
-
-fn type_check_enum_init(
-    init: &UncheckedExpr,
-    enum_name: &str,
-    env: &Environment<Type>,
-) -> Result<CheckedExpr, TypeError> {
-    let inner = match &init.exp {
-        Expr::Cast { ty: cast_ty, expr } => {
-            let expected = Type::Enum(enum_name.to_string());
-            if *cast_ty != expected {
-                return Err(TypeError::new(format!(
-                    "cast target type {:?} doesn't match declared type {:?}",
-                    cast_ty, expected
-                )));
-            }
-            expr
-        }
-        _ => init,
-    };
-    match &inner.exp {
-        Expr::Init { fields } => {
-            if fields.len() != 1 {
-                return Err(TypeError::new(format!(
-                    "enum init requires exactly one variant, got {}",
-                    fields.len()
-                )));
-            }
-            let (variant, payload_opt) = &fields[0];
-            let decl = env
-                .get_type_decl(&UserTypeKind::Enum, enum_name)
-                .ok_or_else(|| {
-                    TypeError::new(format!("unknown enum type: {}", enum_name))
-                })?;
-            let member = decl
-                .members
-                .iter()
-                .find(|m| matches!(m, UserTypeMember::EnumVariant { name: n, .. } if n == variant))
-                .ok_or_else(|| {
-                    TypeError::new(format!(
-                        "unknown variant '{}' for enum {}",
-                        variant, enum_name
-                    ))
-                })?;
-            match (member, payload_opt) {
-                (UserTypeMember::EnumVariant { ty: Some(expected_ty), .. }, Some(payload_expr)) => {
-                    let checked = type_check_expr_to_typed(payload_expr, env)?;
-                    if !types_compatible(&checked.ty, expected_ty) {
-                        return Err(TypeError::new(format!(
-                            "variant '{}' expects {:?} payload, got {:?}",
-                            variant, expected_ty, checked.ty
-                        )));
-                    }
-                    Ok(ExprD {
-                        exp: Expr::EnumVariant {
-                            enum_name: Some(enum_name.to_string()),
-                            variant: variant.clone(),
-                            payload: Some(Box::new(checked)),
-                        },
-                        ty: Type::Enum(enum_name.to_string()),
-                    })
-                }
-                (UserTypeMember::EnumVariant { ty: None, .. }, None) => {
-                    Ok(ExprD {
-                        exp: Expr::EnumVariant {
-                            enum_name: Some(enum_name.to_string()),
-                            variant: variant.clone(),
-                            payload: None,
-                        },
-                        ty: Type::Enum(enum_name.to_string()),
-                    })
-                }
-                (UserTypeMember::EnumVariant { ty: Some(_), .. }, None) => {
-                    Err(TypeError::new(format!(
-                        "variant '{}' requires a payload value, use {{ .{} = expr }}",
-                        variant, variant
-                    )))
-                }
-                (UserTypeMember::EnumVariant { ty: None, .. }, Some(_)) => {
-                    Err(TypeError::new(format!(
-                        "variant '{}' is a unit variant and takes no value",
-                        variant
-                    )))
-                }
-                _ => unreachable!(),
-            }
-        }
-        other => Err(TypeError::new(format!(
-            "enum declaration requires {{ .variant [= expr] }}, got {:?}",
-            other
-        ))),
-    }
-}
-
-fn type_check_expr(e: &UncheckedExpr, env: &Environment<Type>) -> Result<Type, TypeError> {
-    match &e.exp {
-        Expr::Literal(l) => Ok(literal_type(l)),
-        Expr::Ident(name) => match env.get(name) {
-            Some(Type::Function { .. }) => Err(TypeError::new(format!(
-                "cannot use function '{}' as a value",
-                name
-            ))),
-            Some(ty) => Ok(ty.clone()),
-            None => Err(TypeError::new(format!("undeclared variable: {}", name))),
+    let result = match &e.exp {
+        Expr::Literal(l) => ExprD {
+            exp: Expr::Literal(l.clone()),
+            ty: literal_type(l),
         },
+        Expr::Ident(name) => {
+            let ty = match env.get(name) {
+                Some(Type::Function { .. }) => {
+                    return Err(TypeError::new(format!(
+                        "cannot use function '{}' as a value",
+                        name
+                    )))
+                }
+                Some(ty) => ty.clone(),
+                None => {
+                    return Err(TypeError::new(format!(
+                        "undeclared variable: {}",
+                        name
+                    )))
+                }
+            };
+            ExprD {
+                exp: Expr::Ident(name.clone()),
+                ty,
+            }
+        }
         Expr::Neg(inner) => {
-            let ty = type_check_expr(inner, env)?;
-            if matches!(ty, Type::Int | Type::Float) {
-                Ok(ty)
-            } else {
-                Err(TypeError::new("unary minus requires Int or Float"))
+            let inner = type_check_expr(inner, env, None)?;
+            if !matches!(inner.ty, Type::Int | Type::Float) {
+                return Err(TypeError::new("unary minus requires Int or Float"));
+            }
+            let ty = inner.ty.clone();
+            ExprD {
+                exp: Expr::Neg(Box::new(inner)),
+                ty,
             }
         }
         Expr::Add(l, r) | Expr::Sub(l, r) | Expr::Mul(l, r) | Expr::Div(l, r) => {
-            let lt = type_check_expr(l, env)?;
-            let rt = type_check_expr(r, env)?;
-            numeric_binop_result(&lt, &rt)
+            let l = type_check_expr(l, env, None)?;
+            let r = type_check_expr(r, env, None)?;
+            let ty = numeric_binop_result(&l.ty, &r.ty)?;
+            let op = match &e.exp {
+                Expr::Add(_, _) => Expr::Add(Box::new(l), Box::new(r)),
+                Expr::Sub(_, _) => Expr::Sub(Box::new(l), Box::new(r)),
+                Expr::Mul(_, _) => Expr::Mul(Box::new(l), Box::new(r)),
+                Expr::Div(_, _) => Expr::Div(Box::new(l), Box::new(r)),
+                _ => unreachable!(),
+            };
+            ExprD { exp: op, ty }
         }
         Expr::Eq(l, r) | Expr::Ne(l, r) => {
-            let lt = type_check_expr(l, env)?;
-            let rt = type_check_expr(r, env)?;
-            if !types_compatible(&lt, &rt) {
+            let l = type_check_expr(l, env, None)?;
+            let r = type_check_expr(r, env, None)?;
+            if !types_compatible(&l.ty, &r.ty) {
                 return Err(TypeError::new(format!(
                     "equality operands must have compatible types, got {:?} and {:?}",
-                    lt, rt
+                    l.ty, r.ty
                 )));
             }
-            Ok(Type::Bool)
+            let op = match &e.exp {
+                Expr::Eq(_, _) => Expr::Eq(Box::new(l), Box::new(r)),
+                Expr::Ne(_, _) => Expr::Ne(Box::new(l), Box::new(r)),
+                _ => unreachable!(),
+            };
+            ExprD {
+                exp: op,
+                ty: Type::Bool,
+            }
         }
         Expr::Lt(l, r) | Expr::Le(l, r) | Expr::Gt(l, r) | Expr::Ge(l, r) => {
-            let lt = type_check_expr(l, env)?;
-            let rt = type_check_expr(r, env)?;
-            if !is_numeric(&lt) || !is_numeric(&rt) {
+            let l = type_check_expr(l, env, None)?;
+            let r = type_check_expr(r, env, None)?;
+            if !is_numeric(&l.ty) || !is_numeric(&r.ty) {
                 return Err(TypeError::new(format!(
                     "ordering comparison requires numeric operands, got {:?} and {:?}",
-                    lt, rt
+                    l.ty, r.ty
                 )));
             }
-            Ok(Type::Bool)
+            let op = match &e.exp {
+                Expr::Lt(_, _) => Expr::Lt(Box::new(l), Box::new(r)),
+                Expr::Le(_, _) => Expr::Le(Box::new(l), Box::new(r)),
+                Expr::Gt(_, _) => Expr::Gt(Box::new(l), Box::new(r)),
+                Expr::Ge(_, _) => Expr::Ge(Box::new(l), Box::new(r)),
+                _ => unreachable!(),
+            };
+            ExprD {
+                exp: op,
+                ty: Type::Bool,
+            }
         }
         Expr::Not(inner) => {
-            let ty = type_check_expr(inner, env)?;
-            if ty == Type::Bool {
-                Ok(Type::Bool)
-            } else {
-                Err(TypeError::new("not requires Bool operand"))
+            let inner = type_check_expr(inner, env, None)?;
+            if inner.ty != Type::Bool {
+                return Err(TypeError::new("not requires Bool operand"));
+            }
+            ExprD {
+                exp: Expr::Not(Box::new(inner)),
+                ty: Type::Bool,
             }
         }
         Expr::And(l, r) | Expr::Or(l, r) => {
-            let lt = type_check_expr(l, env)?;
-            let rt = type_check_expr(r, env)?;
-            if lt == Type::Bool && rt == Type::Bool {
-                Ok(Type::Bool)
-            } else {
-                Err(TypeError::new("and/or require Bool operands"))
+            let l = type_check_expr(l, env, None)?;
+            let r = type_check_expr(r, env, None)?;
+            if l.ty != Type::Bool || r.ty != Type::Bool {
+                return Err(TypeError::new("and/or require Bool operands"));
+            }
+            let op = match &e.exp {
+                Expr::And(_, _) => Expr::And(Box::new(l), Box::new(r)),
+                Expr::Or(_, _) => Expr::Or(Box::new(l), Box::new(r)),
+                _ => unreachable!(),
+            };
+            ExprD {
+                exp: op,
+                ty: Type::Bool,
             }
         }
         Expr::Call { name, args } => {
+            let (params, return_type) = match env.get(name) {
+                Some(Type::Function { params, return_type }) => (params, return_type),
+                Some(_) => {
+                    return Err(TypeError::new(format!(
+                        "'{}' is not a function",
+                        name
+                    )))
+                }
+                None => {
+                    return Err(TypeError::new(format!(
+                        "undefined function: {}",
+                        name
+                    )))
+                }
+            };
+            if args.len() != params.len() {
+                return Err(TypeError::new(format!(
+                    "function '{}' expects {} arguments, got {}",
+                    name,
+                    params.len(),
+                    args.len()
+                )));
+            }
             let args_checked: Result<Vec<_>, _> = args
                 .iter()
-                .map(|a| type_check_expr_to_typed(a, env))
+                .zip(params.iter())
+                .map(|(a, p)| type_check_expr(a, env, Some(p)))
                 .collect();
             let args_checked = args_checked?;
-            match env.get(name) {
-                Some(Type::Function {
-                    params: param_tys,
-                    return_type,
-                }) => {
-                    if args_checked.len() != param_tys.len() {
-                        return Err(TypeError::new(format!(
-                            "function '{}' expects {} arguments, got {}",
-                            name,
-                            param_tys.len(),
-                            args_checked.len()
-                        )));
-                    }
-                    for (i, (arg, param_ty)) in
-                        args_checked.iter().zip(param_tys.iter()).enumerate()
-                    {
-                        if !types_compatible(&arg.ty, param_ty) {
-                            return Err(TypeError::new(format!(
-                                "argument {} to {}: expected {:?}, got {:?}",
-                                i + 1,
-                                name,
-                                param_ty,
-                                arg.ty
-                            )));
-                        }
-                    }
-                    Ok((**return_type).clone())
+            for (i, (arg, param_ty)) in
+                args_checked.iter().zip(params.iter()).enumerate()
+            {
+                if !types_compatible(&arg.ty, param_ty) {
+                    return Err(TypeError::new(format!(
+                        "argument {} to {}: expected {:?}, got {:?}",
+                        i + 1,
+                        name,
+                        param_ty,
+                        arg.ty
+                    )));
                 }
-                Some(_) => Err(TypeError::new(format!("'{}' is not a function", name))),
-                None => Err(TypeError::new(format!("undefined function: {}", name))),
+            }
+            ExprD {
+                exp: Expr::Call {
+                    name: name.clone(),
+                    args: args_checked,
+                },
+                ty: (**return_type).clone(),
             }
         }
         Expr::ArrayLit(elems) => {
             if elems.is_empty() {
-                return Err(TypeError::new("empty array literal needs type annotation"));
+                return Err(TypeError::new(
+                    "empty array literal needs type annotation",
+                ));
             }
-            let first = type_check_expr(&elems[0], env)?;
-            for e in elems.iter().skip(1) {
-                let ty = type_check_expr(e, env)?;
-                if !types_compatible(&first, &ty) {
-                    return Err(TypeError::new("array elements must have same type"));
+            let elems_checked: Result<Vec<_>, _> = elems
+                .iter()
+                .map(|e| type_check_expr(e, env, None))
+                .collect();
+            let elems_checked = elems_checked?;
+            let first_ty = elems_checked[0].ty.clone();
+            for e in elems_checked.iter().skip(1) {
+                if !types_compatible(&e.ty, &first_ty) {
+                    return Err(TypeError::new(
+                        "array elements must have same type",
+                    ));
                 }
             }
-            Ok(Type::Array(Box::new(first)))
+            ExprD {
+                exp: Expr::ArrayLit(elems_checked),
+                ty: Type::Array(Box::new(first_ty)),
+            }
         }
         Expr::Index { base, index } => {
-            let index_ty = type_check_expr(index, env)?;
-            if index_ty != Type::Int {
+            let index = type_check_expr(index, env, None)?;
+            if index.ty != Type::Int {
                 return Err(TypeError::new("array index must be Int"));
             }
-            let base_ty = type_check_expr(base, env)?;
-            if let Type::Array(elem) = base_ty {
-                Ok(*elem)
-            } else {
-                Err(TypeError::new("indexed expression must be array"))
+            let base = type_check_expr(base, env, None)?;
+            let elem_ty = match &base.ty {
+                Type::Array(elem) => (**elem).clone(),
+                _ => {
+                    return Err(TypeError::new("indexed expression must be array"))
+                }
+            };
+            ExprD {
+                exp: Expr::Index {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                },
+                ty: elem_ty,
             }
         }
         Expr::Member { base, member } => {
-            let base_ty = type_check_expr(base, env)?;
-            match base_ty {
+            let base = type_check_expr(base, env, None)?;
+            let field_ty = match &base.ty {
                 Type::Struct(ref identifier) => {
                     let decl = env
                         .get_type_decl(&UserTypeKind::Struct, identifier)
@@ -986,7 +735,6 @@ fn type_check_expr(e: &UncheckedExpr, env: &Environment<Type>) -> Result<Type, T
                                 identifier
                             ))
                         })?;
-
                     decl.members
                         .iter()
                         .find_map(|m| match m {
@@ -1000,25 +748,225 @@ fn type_check_expr(e: &UncheckedExpr, env: &Environment<Type>) -> Result<Type, T
                                 "unknown member '{}' on struct {}",
                                 member, identifier
                             ))
-                        })
+                        })?
                 }
-                Type::Enum(ref identifier) => Err(TypeError::new(format!(
-                    "cannot access enum variants directly, use match for '{}'",
-                    identifier
-                ))),
-                other => Err(TypeError::new(format!(
-                    "member access requires struct base type, got {:?}",
-                    other
-                ))),
+                Type::Enum(ref identifier) => {
+                    return Err(TypeError::new(format!(
+                        "cannot access enum variants directly, use match for '{}'",
+                        identifier
+                    )))
+                }
+                other => {
+                    return Err(TypeError::new(format!(
+                        "member access requires struct base type, got {:?}",
+                        other
+                    )))
+                }
+            };
+            ExprD {
+                exp: Expr::Member {
+                    base: Box::new(base),
+                    member: member.clone(),
+                },
+                ty: field_ty,
             }
         }
-        Expr::Init { .. } => Err(TypeError::new(
-            "struct/enum init used outside of variable declaration",
-        )),
-        Expr::Cast { ty, .. } => Ok(ty.clone()),
-        Expr::EnumVariant { .. } => Err(TypeError::new(
-            "enum variant used outside of cast or declaration",
-        )),
+        Expr::Init { fields } => match expected {
+            Some(Type::Struct(struct_name)) => {
+                check_struct_init(fields, struct_name, env)?
+            }
+            Some(Type::Enum(enum_name)) => {
+                check_enum_init(fields, enum_name, env)?
+            }
+            Some(other) => {
+                return Err(TypeError::new(format!(
+                    "struct/enum init used with non-struct, non-enum type {:?}",
+                    other
+                )))
+            }
+            None => {
+                return Err(TypeError::new(
+                    "struct/enum init used outside of variable declaration",
+                ))
+            }
+        },
+        Expr::Cast { ty, expr } => {
+            let checked_inner = type_check_expr(expr, env, Some(ty))?;
+            ExprD {
+                exp: Expr::Cast {
+                    ty: ty.clone(),
+                    expr: Box::new(checked_inner),
+                },
+                ty: ty.clone(),
+            }
+        }
+        Expr::EnumVariant {
+            enum_name,
+            variant,
+            payload,
+        } => {
+            let checked_payload = match payload {
+                Some(e) => Some(Box::new(type_check_expr(e, env, None)?)),
+                None => None,
+            };
+            let ty = match enum_name {
+                Some(name) => Type::Enum(name.clone()),
+                None => {
+                    return Err(TypeError::new(
+                        "enum variant without enum type",
+                    ))
+                }
+            };
+            ExprD {
+                exp: Expr::EnumVariant {
+                    enum_name: enum_name.clone(),
+                    variant: variant.clone(),
+                    payload: checked_payload,
+                },
+                ty,
+            }
+        }
+    };
+    Ok(result)
+}
+
+fn check_struct_init(
+    fields: &[(String, Option<UncheckedExpr>)],
+    struct_name: &str,
+    env: &Environment<Type>,
+) -> Result<CheckedExpr, TypeError> {
+    let decl = env
+        .get_type_decl(&UserTypeKind::Struct, struct_name)
+        .ok_or_else(|| TypeError::new(format!("unknown struct type: {}", struct_name)))?;
+
+    let mut expected_fields: std::collections::HashSet<String> = decl
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            UserTypeMember::Field(f) => Some(f.name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut checked_fields = Vec::new();
+    for (field_name, field_expr_opt) in fields {
+        let field_expr = field_expr_opt.as_ref().ok_or_else(|| {
+            TypeError::new(format!(
+                "field '{}' in struct {} must have a value",
+                field_name, struct_name
+            ))
+        })?;
+
+        let field_decl = decl
+            .members
+            .iter()
+            .find_map(|m| match m {
+                UserTypeMember::Field(f) if f.name == *field_name => Some(f),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                TypeError::new(format!(
+                    "unknown field '{}' in struct {}",
+                    field_name, struct_name
+                ))
+            })?;
+
+        let checked = type_check_expr(field_expr, env, Some(&field_decl.ty))?;
+        if !types_compatible(&checked.ty, &field_decl.ty) {
+            return Err(TypeError::new(format!(
+                "field '{}' expects {:?}, got {:?}",
+                field_name, field_decl.ty, checked.ty
+            )));
+        }
+        if !expected_fields.remove(field_name) {
+            return Err(TypeError::new(format!(
+                "duplicate field '{}' in struct {} initializer",
+                field_name, struct_name
+            )));
+        }
+        checked_fields.push((field_name.clone(), Some(checked)));
+    }
+
+    if !expected_fields.is_empty() {
+        return Err(TypeError::new(format!(
+            "missing fields in struct {} initializer: {:?}",
+            struct_name,
+            expected_fields.iter().collect::<Vec<_>>()
+        )));
+    }
+
+    Ok(ExprD {
+        exp: Expr::Init {
+            fields: checked_fields,
+        },
+        ty: Type::Struct(struct_name.to_string()),
+    })
+}
+
+fn check_enum_init(
+    fields: &[(String, Option<UncheckedExpr>)],
+    enum_name: &str,
+    env: &Environment<Type>,
+) -> Result<CheckedExpr, TypeError> {
+    if fields.len() != 1 {
+        return Err(TypeError::new(format!(
+            "enum init requires exactly one variant, got {}",
+            fields.len()
+        )));
+    }
+    let (variant, payload_opt) = &fields[0];
+    let decl = env
+        .get_type_decl(&UserTypeKind::Enum, enum_name)
+        .ok_or_else(|| TypeError::new(format!("unknown enum type: {}", enum_name)))?;
+    let member = decl
+        .members
+        .iter()
+        .find(|m| matches!(m, UserTypeMember::EnumVariant { name: n, .. } if n == variant))
+        .ok_or_else(|| {
+            TypeError::new(format!(
+                "unknown variant '{}' for enum {}",
+                variant, enum_name
+            ))
+        })?;
+    match (member, payload_opt) {
+        (UserTypeMember::EnumVariant { ty: Some(expected_ty), .. }, Some(payload_expr)) => {
+            let checked = type_check_expr(payload_expr, env, Some(expected_ty))?;
+            if !types_compatible(&checked.ty, expected_ty) {
+                return Err(TypeError::new(format!(
+                    "variant '{}' expects {:?} payload, got {:?}",
+                    variant, expected_ty, checked.ty
+                )));
+            }
+            Ok(ExprD {
+                exp: Expr::EnumVariant {
+                    enum_name: Some(enum_name.to_string()),
+                    variant: variant.clone(),
+                    payload: Some(Box::new(checked)),
+                },
+                ty: Type::Enum(enum_name.to_string()),
+            })
+        }
+        (UserTypeMember::EnumVariant { ty: None, .. }, None) => Ok(ExprD {
+            exp: Expr::EnumVariant {
+                enum_name: Some(enum_name.to_string()),
+                variant: variant.clone(),
+                payload: None,
+            },
+            ty: Type::Enum(enum_name.to_string()),
+        }),
+        (UserTypeMember::EnumVariant { ty: Some(_), .. }, None) => {
+            Err(TypeError::new(format!(
+                "variant '{}' requires a payload value, use {{ .{} = expr }}",
+                variant, variant
+            )))
+        }
+        (UserTypeMember::EnumVariant { ty: None, .. }, Some(_)) => {
+            Err(TypeError::new(format!(
+                "variant '{}' is a unit variant and takes no value",
+                variant
+            )))
+        }
+        _ => unreachable!(),
     }
 }
 

@@ -1,7 +1,6 @@
 struct Flag { bool enabled; }
 
 void main() {
-    struct Flag flag = 0;
-    flag.enabled = true;
+    struct Flag flag = { .enabled = true };
     print(flag.enabled);
 }
