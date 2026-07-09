@@ -153,3 +153,128 @@ fn enum_init_in_call_type_mismatch() {
         "enum A { int X; }\nenum B { int Y; }\nvoid foo(enum A a) { }\nvoid main() { foo({ .Y = 1 }); }",
     ).is_err());
 }
+
+#[test]
+fn non_exhaustive_match_rejected() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some = 1 }; match x { case Some: { int y = Some; } } }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("non-exhaustive match"));
+}
+
+#[test]
+fn duplicate_match_arm_rejected() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some = 1 }; match x { case Some: { int y = Some; } case Some: { int z = Some; } case None: { } } }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("duplicate match arm"));
+}
+
+#[test]
+fn unknown_match_variant_rejected() {
+    let result = parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some = 1 }; match x { case Other: { } case None: { } } }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("unknown variant"));
+}
+
+#[test]
+fn unknown_udt_in_struct_field_rejected() {
+    let result = parse_and_type_check(
+        "struct Box { struct Missing value; }\nvoid main() { int x = 0; }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("unknown struct type"));
+}
+
+#[test]
+fn unknown_udt_in_enum_payload_rejected() {
+    let result = parse_and_type_check(
+        "enum Box { struct Missing Value; None; }\nvoid main() { int x = 0; }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("unknown struct type"));
+}
+
+#[test]
+fn unknown_udt_in_function_parameter_rejected() {
+    let result = parse_and_type_check(
+        "void take(struct Missing x) { }\nvoid main() { int x = 0; }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("unknown struct type"));
+}
+
+#[test]
+fn unknown_udt_in_function_return_rejected() {
+    let result = parse_and_type_check(
+        "struct Missing make() { return { .x = 0 }; }\nvoid main() { int x = 0; }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("unknown struct type"));
+}
+
+#[test]
+fn nested_unknown_udt_rejected() {
+    let result = parse_and_type_check(
+        "struct Box { struct Missing[] values; }\nvoid main() { int x = 0; }",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().message.contains("unknown struct type"));
+}
+
+#[test]
+fn invalid_scalar_to_struct_cast_rejected() {
+    assert!(parse_and_type_check(
+        "struct Point { int x; }\nvoid main() { struct Point p = (struct Point)42; }",
+    )
+    .is_err());
+}
+
+#[test]
+fn invalid_scalar_to_enum_cast_rejected() {
+    assert!(parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = (enum Option)42; }",
+    )
+    .is_err());
+}
+
+#[test]
+fn invalid_struct_to_scalar_cast_rejected() {
+    assert!(parse_and_type_check(
+        "struct Point { int x; }\nvoid main() { struct Point p = { .x = 1 }; int y = (int)p; }",
+    )
+    .is_err());
+}
+
+#[test]
+fn invalid_enum_to_scalar_cast_rejected() {
+    assert!(parse_and_type_check(
+        "enum Option { int Some; None; }\nvoid main() { enum Option x = { .Some = 1 }; float y = (float)x; }",
+    )
+    .is_err());
+}
+
+#[test]
+fn invalid_unrelated_udt_cast_rejected() {
+    assert!(parse_and_type_check(
+        "struct Point { int x; }\nstruct Other { int y; }\nvoid main() { struct Other o = { .y = 1 }; struct Point p = (struct Point)o; }",
+    )
+    .is_err());
+}
+
+#[test]
+fn numeric_casts_still_work() {
+    assert!(parse_and_type_check("void main() { int x = (int)1.5; float y = (float)x; }").is_ok());
+}
+
+#[test]
+fn contextual_udt_initializer_assignment_and_return_work() {
+    assert!(parse_and_type_check(
+        "struct Point { int x; }\nstruct Point make() { return { .x = 1 }; }\nvoid main() { struct Point p = { .x = 0 }; p = { .x = 2 }; }",
+    )
+    .is_ok());
+}

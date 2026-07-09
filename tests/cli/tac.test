@@ -13,13 +13,16 @@ main:
 k.tag = 0
 k.payload = 42
 if k.tag != 0 goto Label2:
-B = k.payload
-param B
+_match1 = k.payload
+param _match1
 call print, 1
 goto Label1:
 Label2:
+if k.tag != 1 goto Label3:
 param 0
 call print, 1
+goto Label1:
+Label3:
 Label1:
 >=0
 

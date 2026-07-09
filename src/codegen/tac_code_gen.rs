@@ -3,13 +3,16 @@ use crate::ir::ast::{
     Type, UDTDecl, UDTKind, UDTMember,
 };
 use crate::ir::tac::{Address, Instruction, Operator, TACProgram};
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct Environment {
     current_label: usize,
     current_temporary: usize,
     current_struct_temp: usize,
+    current_match_binding: usize,
     type_declarations: Vec<UDTDecl>,
+    binding_aliases: HashMap<String, Address>,
 }
 
 impl Environment {
@@ -18,7 +21,9 @@ impl Environment {
             current_label: 0,
             current_temporary: 0,
             current_struct_temp: 0,
+            current_match_binding: 0,
             type_declarations: Vec::new(),
+            binding_aliases: HashMap::new(),
         }
     }
 
@@ -39,6 +44,27 @@ impl Environment {
     fn new_struct_temp(&mut self) -> String {
         self.current_struct_temp += 1;
         format!("_init{}", self.current_struct_temp)
+    }
+
+    fn new_match_binding(&mut self) -> String {
+        self.current_match_binding += 1;
+        format!("_match{}", self.current_match_binding)
+    }
+
+    fn alias_for(&self, name: &str) -> Option<Address> {
+        self.binding_aliases.get(name).cloned()
+    }
+
+    fn push_alias(&mut self, name: String, address: Address) -> Option<Address> {
+        self.binding_aliases.insert(name, address)
+    }
+
+    fn restore_alias(&mut self, name: String, previous: Option<Address>) {
+        if let Some(address) = previous {
+            self.binding_aliases.insert(name, address);
+        } else {
+            self.binding_aliases.remove(&name);
+        }
     }
 
     fn variant_tag_index(&self, enum_name: &str, variant: &str) -> i64 {
@@ -69,6 +95,38 @@ impl Environment {
                 UDTMember::EnumVariant { name, ty } if name == variant => ty.clone(),
                 _ => None,
             })
+    }
+
+    fn struct_fields(&self, struct_name: &str) -> Vec<(String, Type)> {
+        self.type_declarations
+            .iter()
+            .find(|d| d.specifier == UDTKind::Struct && d.identifier == struct_name)
+            .unwrap_or_else(|| unreachable!("checked struct type must be declared"))
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                UDTMember::Field(field) => Some((field.name.clone(), field.ty.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn enum_payload_types(&self, enum_name: &str) -> Vec<Type> {
+        let mut payload_types = Vec::new();
+        if let Some(decl) = self
+            .type_declarations
+            .iter()
+            .find(|d| d.specifier == UDTKind::Enum && d.identifier == enum_name)
+        {
+            for member in &decl.members {
+                if let UDTMember::EnumVariant { ty: Some(ty), .. } = member {
+                    if !payload_types.contains(ty) {
+                        payload_types.push(ty.clone());
+                    }
+                }
+            }
+        }
+        payload_types
     }
 }
 
@@ -102,142 +160,10 @@ pub fn translate_statement(statement: CheckedStmt, env: &mut Environment) -> Vec
             .into_iter()
             .flat_map(|s| translate_statement(s, env))
             .collect::<Vec<_>>(),
-        Statement::Decl { name, ty, init } => {
-            let init_box = *init;
-            match init_box.exp {
-                Expr::Init { fields } => {
-                    let mut res = Vec::new();
-                    for (field_name, field_expr_opt) in fields {
-                        let field_expr = field_expr_opt.expect("struct field must have a value");
-
-                        // Handle enum init inside struct field init.
-                        // After type checking, the field value may be:
-                        //   Cast { ty: Enum(_), expr: EnumVariant { .. }  (from explicit cast)
-                        //   EnumVariant { .. }                           (from bare init)
-                        let is_enum_field = if let Expr::Cast {
-                            ty: Type::Enum(_),
-                            expr: cast_inner,
-                        } = &field_expr.exp
-                        {
-                            matches!(&cast_inner.exp, Expr::EnumVariant { .. })
-                        } else {
-                            matches!(&field_expr.exp, Expr::EnumVariant { .. })
-                        };
-
-                        if is_enum_field {
-                            let variant_expr = match &field_expr.exp {
-                                Expr::Cast {
-                                    expr: cast_inner, ..
-                                } => *cast_inner.clone(),
-                                _ => field_expr.clone(),
-                            };
-                            if let Expr::EnumVariant {
-                                enum_name,
-                                variant,
-                                payload,
-                            } = variant_expr.exp
-                            {
-                                let enum_name = enum_name.unwrap_or_default();
-                                let ordinal = env.variant_tag_index(&enum_name, &variant);
-                                res.push(Instruction::CopyAssignment(
-                                    Address::Variable(
-                                        format!("{}.{}.tag", name, field_name),
-                                        Type::Int,
-                                    ),
-                                    Address::Constant(Literal::Int(ordinal), Type::Int),
-                                ));
-                                if let Some(payload_expr) = payload {
-                                    let payload_ty = payload_expr.ty.clone();
-                                    let (addr, insts) = translate_expression(*payload_expr, env);
-                                    res.extend(insts);
-                                    res.push(Instruction::CopyAssignment(
-                                        Address::Variable(
-                                            format!("{}.{}.payload", name, field_name),
-                                            payload_ty,
-                                        ),
-                                        addr,
-                                    ));
-                                }
-                                continue;
-                            }
-                        }
-
-                        // Handle nested struct init: { .field = { .inner = val } }
-                        if let Expr::Init {
-                            fields: inner_fields,
-                        } = field_expr.exp
-                        {
-                            for (inner_name, inner_opt) in inner_fields {
-                                let inner_expr = inner_opt.expect("struct field must have a value");
-                                let inner_ty = inner_expr.ty.clone();
-                                let (addr, insts) = translate_expression(inner_expr, env);
-                                res.extend(insts);
-                                res.push(Instruction::CopyAssignment(
-                                    Address::Variable(
-                                        format!("{}.{}.{}", name, field_name, inner_name),
-                                        inner_ty,
-                                    ),
-                                    addr,
-                                ));
-                            }
-                            continue;
-                        }
-
-                        let field_ty = field_expr.ty.clone();
-                        let (addr, insts) = translate_expression(field_expr, env);
-                        res.extend(insts);
-                        res.push(Instruction::CopyAssignment(
-                            Address::Variable(format!("{}.{}", name, field_name), field_ty),
-                            addr,
-                        ));
-                    }
-                    res
-                }
-                Expr::EnumVariant {
-                    enum_name,
-                    variant,
-                    payload,
-                } => {
-                    let enum_name = enum_name.unwrap_or_default();
-                    let ordinal = env.variant_tag_index(&enum_name, &variant);
-                    let mut res = vec![Instruction::CopyAssignment(
-                        Address::Variable(format!("{}.tag", name), Type::Int),
-                        Address::Constant(Literal::Int(ordinal), Type::Int),
-                    )];
-                    if let Some(payload_expr) = payload {
-                        let payload_ty = payload_expr.ty.clone();
-                        let (addr, insts) = translate_expression(*payload_expr, env);
-                        res.extend(insts);
-                        res.push(Instruction::CopyAssignment(
-                            Address::Variable(format!("{}.payload", name), payload_ty),
-                            addr,
-                        ));
-                    }
-                    res
-                }
-                other => {
-                    let (expression_address, instructions) = translate_expression(
-                        ExprD {
-                            exp: other,
-                            ty: init_box.ty,
-                        },
-                        env,
-                    );
-                    let mut res = instructions;
-                    res.push(Instruction::CopyAssignment(
-                        Address::Variable(name, ty),
-                        expression_address,
-                    ));
-                    res
-                }
-            }
-        }
+        Statement::Decl { name, ty, init } => lower_copy_to_prefix(&name, &ty, *init, env),
         Statement::Assign { target, value } => {
             let var_address = translate_lvalue(*target, env);
-            let (expression_address, instructions) = translate_expression(*value, env);
-            res.extend(instructions);
-            res.push(Instruction::CopyAssignment(var_address, expression_address));
-            res
+            lower_copy_to_address(var_address, *value, env)
         }
         Statement::Call { name, args } => {
             // addresses_and_instructions :: [(Address, [Instruction])]
@@ -297,49 +223,45 @@ pub fn translate_statement(statement: CheckedStmt, env: &mut Environment) -> Vec
                 _ => unreachable!("match target must be a variable"),
             };
 
-            let num_arms = arms.len();
-            for (i, arm) in arms.into_iter().enumerate() {
-                let is_last = i == num_arms - 1;
-                let next_label = if !is_last {
-                    Some(env.new_label())
+            for arm in arms.into_iter() {
+                let next_label = env.new_label();
+                let ordinal = env.variant_tag_index(&enum_name, &arm.variant);
+                let tag_addr = Address::Variable(format!("{}.tag", tag_var), Type::Int);
+                let ordinal_addr = Address::Constant(Literal::Int(ordinal), Type::Int);
+
+                res.push(Instruction::ConditionalJMPRelational(
+                    Operator::NE,
+                    tag_addr,
+                    ordinal_addr,
+                    next_label.clone(),
+                ));
+
+                let active_alias = if let Some(binding) = arm.binding {
+                    let payload_ty = env
+                        .variant_payload_ty(&enum_name, &arm.variant)
+                        .expect("variant with binding must have payload type");
+                    let binding_addr =
+                        Address::Temporary(env.new_match_binding(), payload_ty.clone());
+                    let payload_addr = Address::Variable(format!("{}.payload", tag_var), payload_ty);
+                    res.push(Instruction::CopyAssignment(
+                        binding_addr.clone(),
+                        payload_addr,
+                    ));
+                    let binding_name = binding.clone();
+                    let previous = env.push_alias(binding, binding_addr);
+                    Some((binding_name, previous))
                 } else {
                     None
                 };
 
-                let ordinal = env.variant_tag_index(&enum_name, &arm.variant);
-
-                let tag_addr = Address::Variable(format!("{}.tag", tag_var), Type::Int);
-                let ordinal_addr = Address::Constant(Literal::Int(ordinal), Type::Int);
-
-                if let Some(ref label) = next_label {
-                    res.push(Instruction::ConditionalJMPRelational(
-                        Operator::NE,
-                        tag_addr,
-                        ordinal_addr,
-                        label.clone(),
-                    ));
-                }
-
-                if let Some(binding) = arm.binding {
-                    let payload_ty = env
-                        .variant_payload_ty(&enum_name, &arm.variant)
-                        .expect("variant with binding must have payload type");
-                    let payload_addr =
-                        Address::Variable(format!("{}.payload", tag_var), payload_ty.clone());
-                    res.push(Instruction::CopyAssignment(
-                        Address::Variable(binding, payload_ty),
-                        payload_addr,
-                    ));
-                }
-
                 res.extend(translate_statement(*arm.body, env));
-                if !is_last {
-                    res.push(Instruction::JMP(end_label.clone()));
+
+                if let Some((binding, previous)) = active_alias {
+                    env.restore_alias(binding, previous);
                 }
 
-                if let Some(label) = next_label {
-                    res.push(Instruction::Label(label));
-                }
+                res.push(Instruction::JMP(end_label.clone()));
+                res.push(Instruction::Label(next_label));
             }
 
             res.push(Instruction::Label(end_label));
@@ -351,7 +273,9 @@ pub fn translate_statement(statement: CheckedStmt, env: &mut Environment) -> Vec
 
 fn translate_lvalue(target: CheckedExpr, env: &mut Environment) -> Address {
     match target.exp {
-        Expr::Ident(name) => Address::Variable(name, target.ty),
+        Expr::Ident(name) => env
+            .alias_for(&name)
+            .unwrap_or_else(|| Address::Variable(name, target.ty)),
         Expr::Member { base, member } => translate_member_address(*base, member, target.ty, env),
         _ => todo!(),
     }
@@ -361,19 +285,191 @@ fn translate_member_address(
     base: CheckedExpr,
     member: String,
     member_ty: Type,
-    _env: &mut Environment,
+    env: &mut Environment,
 ) -> Address {
-    Address::Variable(format!("{}.{}", member_base_name(base), member), member_ty)
+    let (base_address, instructions) = translate_expression(base, env);
+    debug_assert!(instructions.is_empty());
+    Address::Variable(format!("{}.{}", address_prefix(&base_address), member), member_ty)
 }
 
-fn member_base_name(base: CheckedExpr) -> String {
-    match base.exp {
-        Expr::Ident(name) => name,
-        Expr::Member {
-            base: nested_base,
-            member,
-        } => format!("{}.{}", member_base_name(*nested_base), member),
-        _ => todo!(),
+fn address_prefix(address: &Address) -> String {
+    match address {
+        Address::Variable(name, _) | Address::Temporary(name, _) => name.clone(),
+        Address::Constant(_, _) => unreachable!("UDT value cannot be a scalar constant"),
+    }
+}
+
+fn lower_copy_to_address(
+    destination: Address,
+    source: CheckedExpr,
+    env: &mut Environment,
+) -> Vec<Instruction> {
+    match &destination {
+        Address::Variable(name, ty) | Address::Temporary(name, ty) => {
+            lower_copy_to_prefix(name, ty, source, env)
+        }
+        Address::Constant(_, _) => unreachable!("cannot assign to constant address"),
+    }
+}
+
+fn lower_copy_to_prefix(
+    destination_prefix: &str,
+    destination_ty: &Type,
+    source: CheckedExpr,
+    env: &mut Environment,
+) -> Vec<Instruction> {
+    match destination_ty {
+        Type::Struct(struct_name) => lower_struct_copy(destination_prefix, struct_name, source, env),
+        Type::Enum(enum_name) => lower_enum_copy(destination_prefix, enum_name, source, env),
+        _ => {
+            let (source_address, mut instructions) = translate_expression(source, env);
+            instructions.push(Instruction::CopyAssignment(
+                Address::Variable(destination_prefix.to_string(), destination_ty.clone()),
+                source_address,
+            ));
+            instructions
+        }
+    }
+}
+
+fn lower_struct_copy(
+    destination_prefix: &str,
+    struct_name: &str,
+    source: CheckedExpr,
+    env: &mut Environment,
+) -> Vec<Instruction> {
+    match source.exp {
+        Expr::Cast { expr, .. } => lower_copy_to_prefix(destination_prefix, &source.ty, *expr, env),
+        Expr::Init { fields } => {
+            let mut instructions = Vec::new();
+            for (field_name, field_expr_opt) in fields {
+                let field_expr = field_expr_opt.expect("struct field must have a value");
+                let field_ty = field_expr.ty.clone();
+                instructions.extend(lower_copy_to_prefix(
+                    &format!("{}.{}", destination_prefix, field_name),
+                    &field_ty,
+                    field_expr,
+                    env,
+                ));
+            }
+            instructions
+        }
+        other => {
+            let (source_address, mut instructions) = translate_expression(
+                ExprD {
+                    exp: other,
+                    ty: source.ty,
+                },
+                env,
+            );
+            let source_prefix = address_prefix(&source_address);
+            for (field_name, field_ty) in env.struct_fields(struct_name) {
+                instructions.extend(lower_component_copy(
+                    &format!("{}.{}", destination_prefix, field_name),
+                    &format!("{}.{}", source_prefix, field_name),
+                    &field_ty,
+                    env,
+                ));
+            }
+            instructions
+        }
+    }
+}
+
+fn lower_enum_copy(
+    destination_prefix: &str,
+    enum_name: &str,
+    source: CheckedExpr,
+    env: &mut Environment,
+) -> Vec<Instruction> {
+    match source.exp {
+        Expr::Cast { expr, .. } => lower_copy_to_prefix(destination_prefix, &source.ty, *expr, env),
+        Expr::EnumVariant {
+            enum_name: source_enum_name,
+            variant,
+            payload,
+        } => {
+            let source_enum_name = source_enum_name.unwrap_or_else(|| enum_name.to_string());
+            let ordinal = env.variant_tag_index(&source_enum_name, &variant);
+            let mut instructions = vec![Instruction::CopyAssignment(
+                Address::Variable(format!("{}.tag", destination_prefix), Type::Int),
+                Address::Constant(Literal::Int(ordinal), Type::Int),
+            )];
+            if let Some(payload_expr) = payload {
+                let payload_ty = payload_expr.ty.clone();
+                instructions.extend(lower_copy_to_prefix(
+                    &format!("{}.payload", destination_prefix),
+                    &payload_ty,
+                    *payload_expr,
+                    env,
+                ));
+            }
+            instructions
+        }
+        other => {
+            let (source_address, mut instructions) = translate_expression(
+                ExprD {
+                    exp: other,
+                    ty: source.ty,
+                },
+                env,
+            );
+            let source_prefix = address_prefix(&source_address);
+            instructions.push(Instruction::CopyAssignment(
+                Address::Variable(format!("{}.tag", destination_prefix), Type::Int),
+                Address::Variable(format!("{}.tag", source_prefix), Type::Int),
+            ));
+            for payload_ty in env.enum_payload_types(enum_name) {
+                instructions.extend(lower_component_copy(
+                    &format!("{}.payload", destination_prefix),
+                    &format!("{}.payload", source_prefix),
+                    &payload_ty,
+                    env,
+                ));
+            }
+            instructions
+        }
+    }
+}
+
+fn lower_component_copy(
+    destination_prefix: &str,
+    source_prefix: &str,
+    ty: &Type,
+    env: &mut Environment,
+) -> Vec<Instruction> {
+    match ty {
+        Type::Struct(struct_name) => {
+            let mut instructions = Vec::new();
+            for (field_name, field_ty) in env.struct_fields(struct_name) {
+                instructions.extend(lower_component_copy(
+                    &format!("{}.{}", destination_prefix, field_name),
+                    &format!("{}.{}", source_prefix, field_name),
+                    &field_ty,
+                    env,
+                ));
+            }
+            instructions
+        }
+        Type::Enum(enum_name) => {
+            let mut instructions = vec![Instruction::CopyAssignment(
+                Address::Variable(format!("{}.tag", destination_prefix), Type::Int),
+                Address::Variable(format!("{}.tag", source_prefix), Type::Int),
+            )];
+            for payload_ty in env.enum_payload_types(enum_name) {
+                instructions.extend(lower_component_copy(
+                    &format!("{}.payload", destination_prefix),
+                    &format!("{}.payload", source_prefix),
+                    &payload_ty,
+                    env,
+                ));
+            }
+            instructions
+        }
+        _ => vec![Instruction::CopyAssignment(
+            Address::Variable(destination_prefix.to_string(), ty.clone()),
+            Address::Variable(source_prefix.to_string(), ty.clone()),
+        )],
     }
 }
 
@@ -386,7 +482,9 @@ fn translate_conditional_false(
         Expr::Literal(Literal::Bool(true)) => vec![],
         Expr::Literal(Literal::Bool(false)) => vec![Instruction::JMP(false_label)],
         Expr::Ident(name) => {
-            let addr = Address::Variable(name.to_string(), expression.ty);
+            let addr = env
+                .alias_for(&name)
+                .unwrap_or_else(|| Address::Variable(name.to_string(), expression.ty));
             vec![Instruction::ConditionalJMPFalse(addr, false_label)]
         }
         Expr::Lt(left, right) => {
@@ -427,7 +525,11 @@ fn translate_expression(
 ) -> (Address, Vec<Instruction>) {
     match expression.exp {
         Expr::Literal(value) => (Address::Constant(value, expression.ty), vec![]),
-        Expr::Ident(name) => (Address::Variable(name.to_string(), expression.ty), vec![]),
+        Expr::Ident(name) => (
+            env.alias_for(&name)
+                .unwrap_or_else(|| Address::Variable(name.to_string(), expression.ty)),
+            vec![],
+        ),
         Expr::Member { base, member } => (
             translate_member_address(*base, member, expression.ty, env),
             vec![],
@@ -526,17 +628,15 @@ fn translate_expression(
         }
         Expr::Init { fields } => {
             let temp_name = env.new_struct_temp();
-            let mut instructions = Vec::new();
-            for (field_name, field_expr_opt) in fields {
-                let field_expr = field_expr_opt.expect("struct field must have a value");
-                let field_ty = field_expr.ty.clone();
-                let (addr, insts) = translate_expression(field_expr, env);
-                instructions.extend(insts);
-                instructions.push(Instruction::CopyAssignment(
-                    Address::Variable(format!("{}.{}", temp_name, field_name), field_ty),
-                    addr,
-                ));
-            }
+            let instructions = lower_copy_to_prefix(
+                &temp_name,
+                &expression.ty,
+                ExprD {
+                    exp: Expr::Init { fields },
+                    ty: expression.ty.clone(),
+                },
+                env,
+            );
             (Address::Variable(temp_name, expression.ty), instructions)
         }
         Expr::EnumVariant {
@@ -545,21 +645,19 @@ fn translate_expression(
             payload,
         } => {
             let temp_name = env.new_struct_temp();
-            let enum_name = enum_name.unwrap_or_default();
-            let ordinal = env.variant_tag_index(&enum_name, &variant);
-            let mut instructions = vec![Instruction::CopyAssignment(
-                Address::Variable(format!("{}.tag", temp_name), Type::Int),
-                Address::Constant(Literal::Int(ordinal), Type::Int),
-            )];
-            if let Some(payload_expr) = payload {
-                let payload_ty = payload_expr.ty.clone();
-                let (addr, insts) = translate_expression(*payload_expr, env);
-                instructions.extend(insts);
-                instructions.push(Instruction::CopyAssignment(
-                    Address::Variable(format!("{}.payload", temp_name), payload_ty),
-                    addr,
-                ));
-            }
+            let instructions = lower_copy_to_prefix(
+                &temp_name,
+                &expression.ty,
+                ExprD {
+                    exp: Expr::EnumVariant {
+                        enum_name,
+                        variant,
+                        payload,
+                    },
+                    ty: expression.ty.clone(),
+                },
+                env,
+            );
             (Address::Variable(temp_name, expression.ty), instructions)
         }
         Expr::Cast { ty: _cast_ty, expr } => {

@@ -34,5 +34,5 @@ fn enum_value_equality() {
 
 #[test]
 fn match_binding_does_not_leak() {
-    assert!(run("enum Option { int Some; None; } void main() { int Some = 0; enum Option x = { .Some = 42 }; match x { case Some: { int y = Some; } case None: { } } }").is_ok());
+    assert!(run("enum Option { int Some; None; } void main() { int Some = 0; enum Option x = { .Some = 42 }; match x { case Some: { int y = Some; } case None: { } } int[] arr = [1]; int v = arr[Some]; }").is_ok());
 }
